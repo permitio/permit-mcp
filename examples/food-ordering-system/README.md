@@ -70,7 +70,7 @@ You will also need to create a Operation Approval element which will make the _R
 - Name: Dish Approval
 - Resource Type: restaurants
 
-## Run the MCP Client
+## Runing the MCP Client
 Enter the following command in your terminal:
 
 ```shell

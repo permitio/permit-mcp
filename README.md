@@ -49,4 +49,9 @@ You can use the following ressources to help with that:
 - ACCESS_ELEMENTS_CONFIG_ID: The ID of the [user management element](https://docs.permit.io/embeddable-uis/element/user-management).
 - OPERATION_ELEMENTS_CONFIG_ID: The ID of the [approval management element](https://docs.permit.io/embeddable-uis/element/approval-management).
 
+## Runing the MCP Client
+Enter the following command in your terminal:
 
+```shell
+uv run -m src.permit_mcp
+```
