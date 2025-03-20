@@ -11,3 +11,4 @@ wheels/
 .env
 
 food_ordering.db
+uv.lock

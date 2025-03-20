@@ -1,5 +1,4 @@
 from typing import List, Tuple, Optional, Dict, Any, Union
-import httpx
 import aiosqlite
 import asyncio
 import sqlite3
@@ -26,10 +25,6 @@ TENANT = os.getenv("TENANT")
 
 LOCAL_PDP_URL = os.getenv("LOCAL_PDP_URL")
 PERMIT_API_KEY = os.getenv("PERMIT_API_KEY")
-PROJECT_ID = os.getenv('PROJECT_ID')
-ENV_ID = os.getenv('ENV_ID')
-ACCESS_ELEMENTS_CONFIG_ID = os.getenv('ACCESS_ELEMENTS_CONFIG_ID')
-OPERATION_ELEMENTS_CONFIG_ID = os.getenv('OPERATION_ELEMENTS_CONFIG_ID')
 
 # This will create dadjokes.db if it doesn't exist.
 conn = sqlite3.connect(DB_NAME)
@@ -43,7 +38,7 @@ permit = Permit(
 # Initialize FastMCP instance
 mcp = FastMCP("food_ordering")
 permit_server = PermitServer(
-    mcp, exclude_tools=['create_access_request', 'create_operation_approval', 'list_access_requests', 'list_operation_approvals'])
+    mcp, exclude_tools=['create_access_request', 'create_operation_approval', 'list_resource_instances'])
 
 
 async def init_db():
@@ -218,6 +213,14 @@ async def get_restaurant_by_name(restaurant_name: str) -> Optional[Dict[str, Any
     return None
 
 
+@mcp.prompt()
+def permitio_tools_guide() -> str:
+    """Provides guidance on using the tool with the required parameters."""
+    return """
+Note: The `resource_instance` parameter is required and should **ALWAYS** be supplied during tool use, else there will be an error for this use case. Its value can be obtained by first using the `list_restaurants` tool.
+"""
+
+
 @mcp.tool()
 async def verify_access(username: str) -> Optional[str]:
     """
@@ -238,15 +241,21 @@ async def verify_access(username: str) -> Optional[str]:
 
 
 @mcp.tool()
-async def list_restaurants() -> List[Tuple[str, int]]:
+async def list_restaurants() -> dict:
     """
     Lists available restaurants along with their ID.
     If a restaurant is not for kids, the number 0 is after to the restaurant's name.
     """
     async with aiosqlite.connect(DB_NAME) as db:
-        cursor = await db.execute("SELECT name, allowed_for_children FROM restaurants")
+        db.row_factory = aiosqlite.Row
+        cursor = await db.execute("SELECT id, name, allowed_for_children FROM restaurants")
         rows = await cursor.fetchall()
-        return rows
+        # Convert rows to dictionaries with "id" renamed & converted to string
+        return [
+            {**row_dict, "resource_instance": row_dict.pop("id")}
+            for row in rows
+            if (row_dict := dict(row))
+        ]
 
 
 @mcp.tool()
@@ -359,7 +368,6 @@ async def request_restaurant_access(username: str, restaurant_name: str) -> str:
 
     return await permit_server.create_access_request(
         user_id=username,
-        resource="restaurants",
         resource_instance=restaurant['id'],
         role="child-can-order",
         reason=f"User {username} requests role child-can-order for {restaurant['name']} restaurant"
@@ -396,85 +404,10 @@ async def request_dish_approval(username: str, dish_name: str) -> str:
     # Use the create_operation_approval method from PermitTools
     return await permit_server.create_operation_approval(
         user_id=username,
-        resource="restaurants",
-        resource_instance=restaurant[0],  # Restaurant ID
+        resource_instance=restaurant[0],
         reason=f"User {username} requests approval to order {dish_name}"
     )
 
-
-@mcp.tool()
-async def list_pending_restaurant_request(username: str, restaurant_name: str) -> List[Dict]:
-    """
-    Lists the pending requests to access a restaurant in order to be able to view its dishes.
-
-    Args:
-        username: The username of the current user.
-        restaurant_name: The name of the restaurant whose pending access requests are to be listed.
-    """
-    username = username.lower()
-    restaurant = await get_restaurant_by_name(restaurant_name)
-    if not restaurant:
-        raise ToolError(
-            "Restaurant not found. Make sure to supply the correct restaurant name.")
-
-    try:
-        # Use the list_access_requests method from PermitTools
-        access_requests = await permit_server.list_access_requests(
-            user_id=username,
-            resource="restaurants",
-            resource_instance=restaurant['id'],
-            status="pending"
-        )
-        filtered_data = [
-            {
-                "access_request_id": item["id"],
-                "reason": item["reason"]
-            }
-            for item in access_requests
-            if item.get("status") == "pending"
-        ]
-        return filtered_data
-    except Exception as e:
-        raise
-
-
-@mcp.tool()
-async def list_pending_dish_request(username: str, restaurant_name: str) -> List[dict]:
-    """
-    Lists the pending one-time operation approval sent for permission to order a dish.
-
-    Args:
-        username: The username of the current user.
-        restaurant_name: The name of the restaurant whose pending dish approvals are to be listed.
-    """
-    username = username.lower()
-
-    # Fetch the restaurant ID
-    restaurant = await get_restaurant_by_name(restaurant_name)
-    if not restaurant:
-        raise ToolError(
-            "Restaurant not found. Make sure to supply the correct restaurant name.")
-
-    try:
-        # Use the list_operation_approvals method from PermitTools
-        operation_approvals = await permit_server.list_operation_approvals(
-            user_id=username,
-            resource="restaurants",
-            resource_instance=restaurant['id'],
-            status="pending"
-        )
-
-        filtered_data = [
-            {
-                "access_request_id": item["id"],
-                "reason": item["reason"]
-            }
-            for item in operation_approvals
-            if item.get("status") == "pending"
-        ]
-        return filtered_data
-    except Exception as e:
-        raise
 
 if __name__ == "__main__":
     asyncio.run(init_db())

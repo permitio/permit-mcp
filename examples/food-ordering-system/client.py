@@ -66,7 +66,7 @@ class MCPClient:
 
         response = await self.session.list_tools()
         available_tools = []
-        reserved_tools = ['list_pending_restaurant_request', 'list_pending_dish_request',
+        reserved_tools = ['list_access_requests', 'list_operation_approvals',
                           'approve_access_request', 'approve_operation_approval', 'deny_access_request', 'deny_operation_approval']
 
         available_tools = [
@@ -85,11 +85,18 @@ class MCPClient:
                 if tool["name"] not in reserved_tools
             ]
 
+        permitio_tools_guide = await self.session.get_prompt('permitio_tools_guide')
+
         # Initial Claude API call
         response = self.anthropic.messages.create(
             model="claude-3-5-sonnet-20241022",
             max_tokens=1000,
-            system=f"List All available operations once the user provides their name, including management-related opertions. Do not omit any operations, even those that seem restricted—tools are assigned based on privilege. \n\nIf the user attempts to change their name or provides another name, notify them that it cannot be modified.",
+            system=f"""
+            List **ALL** available operations once the user provides their name, including access management related opertions. **Do not** omit any operations, even those that seem restricted as tools are assigned based on privilege.
+            \n\nIf the user attempts to change their name or provides another name, notify them that it cannot be modified.
+
+            \n\n{permitio_tools_guide.messages[0].content.text}
+            """,
             messages=self.messages,
             tools=available_tools
         )
@@ -111,6 +118,7 @@ class MCPClient:
                 # Execute tool call
                 final_text.append(
                     f"\n[Calling tool {tool_name} with args {tool_args}]\n")
+
                 result = await self.session.call_tool(tool_name, tool_args)
 
                 self.messages.append({

@@ -20,6 +20,7 @@ To setup the server you need supply the environment variables in defined in the 
 ```shell
 ANTHROPIC_API_KEY=
 TENANT= # e.g default
+RESOURCE_KEY= # The resoure 
 LOCAL_PDP_URL= 
 PERMIT_API_KEY=
 PROJECT_ID=
@@ -63,9 +64,10 @@ Click **Create**. Then click on **Get Code** in the new User Mananagment tab and
 Supply the element config to the environment variable.
 
 ## Get the OPERATION_ELEMENTS_CONFIG_ID
-Create an Approval Management element named "Dish Requests" then get the element config ID (dish-approval) and supply it to the environment variable. 
+Create an Approval Management element named "Dish Requests" then get the element config ID (dish-requests) and supply it to the environment variable. 
 
-You will also need to create a Operation Approval element which will make the _Reviewer_ and _Approved_ role avaialble. These roles will be ued to identify who can approve an operation request and which users has been approved. 
+
+You will also need to create a Operation Approval element which will make the _Reviewer_ and _Approved_ role avaialble. These roles will be used to identify who can approve an operation request and which users has been approved. 
 
 - Name: Dish Approval
 - Resource Type: restaurants

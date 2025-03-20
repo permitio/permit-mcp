@@ -1,4 +1,4 @@
-from typing import List, Dict, Optional, Callable
+from typing import List, Dict, Optional, Callable, Union
 import httpx
 import json
 import os
@@ -20,13 +20,14 @@ logger = logging.getLogger(__name__)
 load_dotenv()
 
 # Environment variables
+TENANT = os.getenv("TENANT")
+RESOURCE_KEY = os.getenv('RESOURCE_KEY')
 LOCAL_PDP_URL = os.getenv("LOCAL_PDP_URL")
 PERMIT_API_KEY = os.getenv("PERMIT_API_KEY")
 PROJECT_ID = os.getenv("PROJECT_ID")
 ENV_ID = os.getenv("ENV_ID")
 OPERATION_ELEMENTS_CONFIG_ID = os.getenv('OPERATION_ELEMENTS_CONFIG_ID')
 ACCESS_ELEMENTS_CONFIG_ID = os.getenv("ACCESS_ELEMENTS_CONFIG_ID")
-TENANT = os.getenv("TENANT")
 
 
 class PermitServer:
@@ -48,13 +49,56 @@ class PermitServer:
         setattr(self, tool_name, func)
 
     def register_tools(self):
-        async def create_access_request(user_id: str, resource: str, resource_instance: Optional[str], role: str, reason: str) -> str:
+
+        async def list_resource_instances(page: int = 1, per_page: int = 100):
+            """
+                Lists resource instances along with their ID and key which can be used as a parameter for tools that required it.
+
+                Args:
+                    page: Optional page number of the results to fetch, starting at page 1.
+                    per_page: Optional number of results per page (maximum of 100).
+            """
+
+            url = f"https://api.permit.io/v2/facts/{PROJECT_ID}/{ENV_ID}/resource_instances"
+
+            params = {k: v for k, v in {
+                "tenant": TENANT,
+                "resource": RESOURCE_KEY,
+                "page": page,
+                "per_page": per_page,
+            }.items() if v is not None}
+
+            headers = {"authorization": f"Bearer {PERMIT_API_KEY}",
+                       "Content-Type": "application/json"}
+
+            async with httpx.AsyncClient() as client:
+                response = await client.get(url, headers=headers, params=params)
+                if 200 <= response.status_code < 300:
+                    resources_instances = response.json()
+                    updated_data = [
+                        {
+                            "key": item['key'],
+                            "id": item['id'],
+                            "resource": item['resource'],
+                            "created_at": item['created_at'],
+                        }
+                        for item in resources_instances
+                    ]
+                    return updated_data
+
+                else:
+                    raise ToolError(
+                        f"Request failed with status code {response.status_code}: {response.text}")
+
+        self._register_tool("list_resource_instances",
+                            list_resource_instances)
+
+        async def create_access_request(user_id: str, resource_instance: Optional[Union[str, int]], role: str, reason: str) -> str:
             """
             Create a new access request.
 
             Args:
-                user_id: Either the unique id of the user, or the URL-friendly key of the user requesting access.
-                resource: Resource id or key that the user is requesting access to.
+                user_id: The ID or URL-friendly key of the user requesting access.
                 resource_instance: The id or key of the specific resource instance that the user is requesting access (optional).
                 role: Role id or key that the user is requesting access to (e.g 'editor').
                 reason: The reason for the access request.
@@ -62,7 +106,7 @@ class PermitServer:
 
             url = f"https://api.permit.io/v2/facts/{PROJECT_ID}/{ENV_ID}/access_requests/{ACCESS_ELEMENTS_CONFIG_ID}/user/{user_id}/tenant/{TENANT}"
             access_request_details = {
-                "tenant": TENANT, "resource": resource, "role": role}
+                "tenant": TENANT, "resource": RESOURCE_KEY, "role": role}
             if resource_instance is not None:
                 access_request_details["resource_instance"] = resource_instance
 
@@ -84,10 +128,9 @@ class PermitServer:
 
         async def list_access_requests(
             user_id: str,
-            resource: str,
             status: Optional[str] = None,
             role: Optional[str] = None,
-            resource_instance: Optional[str] = None,
+            resource_instance: Optional[Union[str, int]] = None,
             page: Optional[int] = 1,
             per_page: Optional[int] = 30,
         ) -> List[Dict]:
@@ -95,11 +138,10 @@ class PermitServer:
             List access requests.
 
             Args:
-                user_id: The ID or URL-friendly key of the user requesting the list.
+                user_id: The ID or URL-friendly key of the user requesting to view the list.
                 status: Optional filter by status (e.g., "pending", "approved", "denied", "canceled").
-                resource: Resource id or key that the user whats to list it's access requests.
                 role: Optional filter by role.
-                resource_instance: Optional filter by resource instance key or ID.
+                resource_instance: Filter by resource instance key or ID. This parameter may be required or optional depending on the usecase.
                 page: Page number of the results to fetch (default: 1).
                 per_page: The number of results per page (max 100, default: 30).
             """
@@ -112,7 +154,7 @@ class PermitServer:
             params = {k: v for k, v in {
                 "status": status,
                 "role": role,
-                "resource": resource,
+                "resource": RESOURCE_KEY,
                 "resource_instance_id": resource_instance,
                 "page": page,
                 "per_page": per_page,
@@ -121,7 +163,8 @@ class PermitServer:
             async with httpx.AsyncClient() as client:
                 response = await client.get(url, headers=headers, params=params)
                 if 200 <= response.status_code < 300:
-                    return response.json().get("data", [])
+                    access_requests = response.json().get("data", [])
+                    return access_requests
                 else:
                     raise ToolError(
                         f"Request failed with status code {response.status_code}: {response.text}")
@@ -134,7 +177,7 @@ class PermitServer:
 
             Args:
                 user_id: The ID or URL-friendly key of the user approving the request.
-                access_request_id: The ID of the access request to approve.
+                access_request_id: The ID of the access request to approve, which can be obtained by first listing access requests.
                 reviewer_comment: Optinoal comment from the reviewer.
             """
             url = f"https://api.permit.io/v2/facts/{PROJECT_ID}/{ENV_ID}/access_requests/{ACCESS_ELEMENTS_CONFIG_ID}/user/{user_id}/tenant/{TENANT}/{access_request_id}/approve"
@@ -164,7 +207,7 @@ class PermitServer:
 
             Args:
                 user_id: The ID or URL-friendly key of the user denying the request.
-                access_request_id: The ID or URL-friendly key of the access request to deny.
+                access_request_id: The ID or URL-friendly key of the access request to deny, which can be obtained by first listing access requests.
                 reviewer_comment: Optional comment from the reviewer.
             """
             url = f"https://api.permit.io/v2/facts/{PROJECT_ID}/{ENV_ID}/access_requests/{ACCESS_ELEMENTS_CONFIG_ID}/user/{user_id}/tenant/{TENANT}/{access_request_id}/deny"
@@ -188,13 +231,12 @@ class PermitServer:
         self._register_tool("deny_access_request", deny_access_request)
 
         # Operation Approval Tools
-        async def create_operation_approval(user_id: str, resource: str, reason: str, resource_instance: Optional[str] = None) -> str:
+        async def create_operation_approval(user_id: str, reason: str, resource_instance: Optional[Union[str, int]] = None) -> str:
             """
             Create a new operation approval request.
 
             Args:
                 user_id: The ID or URL-friendly key of the user requesting the approval.
-                resource: The resource for which the approval is requested.
                 resource_instance: The specific instance of the resource (optional).
                 reason: The reason for the approval request.
             """
@@ -203,7 +245,7 @@ class PermitServer:
 
             access_request_details = {
                 "tenant": TENANT,
-                "resource": resource,
+                "resource": RESOURCE_KEY,
             }
             if resource_instance is not None:
                 access_request_details["resource_instance"] = resource_instance
@@ -230,20 +272,18 @@ class PermitServer:
 
         async def list_operation_approvals(
             user_id: str,
-            resource: str,
             status: Optional[str] = None,
-            resource_instance: Optional[str] = None,
+            resource_instance: Optional[Union[str, int]] = None,
             page: Optional[int] = 1,
             per_page: Optional[int] = 30,
         ) -> List[Dict]:
             """
-            List operation approvals,
+            List one-time operation approval requests.
 
             Args:
                 user_id: The ID or URL-friendly key of the user requesting the list.
                 status: Optional filter by status (e.g., "pending", "approved", "denied", "canceled").
-                resource: Resource id or key that the user whats to list it's operation approval requests.
-                resource_instance: Optional filter by resource instance key or ID.
+                resource_instance: Filter by resource instance key or ID. This parameter may be required or optional depending on the usecase.
                 page: Page number of the results to fetch (default: 1).
                 per_page: The number of results per page (max 100, default: 30).
             """
@@ -256,7 +296,7 @@ class PermitServer:
             }
             params = {
                 "element_id": OPERATION_ELEMENTS_CONFIG_ID,
-                "resource": resource
+                "resource": RESOURCE_KEY
             }
             if status:
                 params["status"] = status
@@ -272,7 +312,8 @@ class PermitServer:
                 if response.status_code >= 200 and response.status_code < 300:
                     string_data = response.content.decode('utf-8')
                     data = json.loads(string_data)
-                    return data.get("data", [])
+                    operation_approvals = data.get("data", [])
+                    return operation_approvals
                 else:
                     raise ToolError(
                         f"Request failed with status code {response.status_code}: {response.text}")
@@ -286,7 +327,7 @@ class PermitServer:
 
             Args:
                 user_id: The ID or URL-friendly key of the user approving the request.
-                operation_approval_id: The ID or URL-friendly key the operation approval.
+                operation_approval_id: The ID or URL-friendly key of the operation approval, which can be obtained by first listing operation approvals.
                 reviewer_comment: Optional comment from the reviewer.
             """
             login = await self.permit.elements.login_as(user_id, TENANT)
@@ -317,7 +358,7 @@ class PermitServer:
 
             Args:
                 user_id: The ID or URL-friendly key of the user denying the request.
-                operation_approval_id: The ID or URL-friendly key of the operation approval.
+                operation_approval_id: The ID or URL-friendly key of the operation approval to deny, which can be obtained by first listing operation approvals.
                 reviewer_comment: Optional comment from the reviewer.
             """
             login = await self.permit.elements.login_as(user_id, TENANT)
