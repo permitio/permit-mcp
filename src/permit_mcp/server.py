@@ -20,9 +20,10 @@ logger = logging.getLogger(__name__)
 load_dotenv()
 
 # Environment variables
-TENANT = os.getenv("TENANT")
+PERMIT_PDP_URL = os.getenv("PERMIT_PDP_URL", 'https://cloudpdp.api.permit.io')
+TENANT = os.getenv("TENANT", 'default')
+
 RESOURCE_KEY = os.getenv('RESOURCE_KEY')
-LOCAL_PDP_URL = os.getenv("LOCAL_PDP_URL")
 PERMIT_API_KEY = os.getenv("PERMIT_API_KEY")
 PROJECT_ID = os.getenv("PROJECT_ID")
 ENV_ID = os.getenv("ENV_ID")
@@ -34,7 +35,7 @@ class PermitServer:
     def __init__(self, mcp: FastMCP, exclude_tools=None):
         self.mcp = mcp
         self.permit = Permit(
-            pdp=LOCAL_PDP_URL,
+            pdp=PERMIT_PDP_URL,
             token=PERMIT_API_KEY,
         )
         self.exclude_tools = exclude_tools if exclude_tools else []
@@ -52,7 +53,8 @@ class PermitServer:
 
         async def list_resource_instances(page: int = 1, per_page: int = 100):
             """
-                Lists resource instances along with their ID and key which can be used as a parameter for tools that required it.
+                Lists resource instances along with their ID and key which can be used as a parameter for tools that required it. 
+                It can be used to verify the existeance of a resource instance.
 
                 Args:
                     page: Optional page number of the results to fetch, starting at page 1.
@@ -75,16 +77,7 @@ class PermitServer:
                 response = await client.get(url, headers=headers, params=params)
                 if 200 <= response.status_code < 300:
                     resources_instances = response.json()
-                    updated_data = [
-                        {
-                            "key": item['key'],
-                            "id": item['id'],
-                            "resource": item['resource'],
-                            "created_at": item['created_at'],
-                        }
-                        for item in resources_instances
-                    ]
-                    return updated_data
+                    return resources_instances
 
                 else:
                     raise ToolError(
@@ -93,14 +86,14 @@ class PermitServer:
         self._register_tool("list_resource_instances",
                             list_resource_instances)
 
-        async def create_access_request(user_id: str, resource_instance: Optional[Union[str, int]], role: str, reason: str) -> str:
+        async def create_access_request(user_id: str,  role: str, reason: str, resource_instance: Optional[Union[str, int]] = None) -> str:
             """
             Create a new access request.
 
             Args:
                 user_id: The ID or URL-friendly key of the user requesting access.
-                resource_instance: The id or key of the specific resource instance that the user is requesting access (optional).
-                role: Role id or key that the user is requesting access to (e.g 'editor').
+                resource_instance: The id or key of the specific resource that the user is requesting access. This parameter is required for ReBAC authorization.
+                role: Role id or key that the user is requesting access to.
                 reason: The reason for the access request.
             """
 
@@ -141,7 +134,7 @@ class PermitServer:
                 user_id: The ID or URL-friendly key of the user requesting to view the list.
                 status: Optional filter by status (e.g., "pending", "approved", "denied", "canceled").
                 role: Optional filter by role.
-                resource_instance: Filter by resource instance key or ID. This parameter may be required or optional depending on the usecase.
+                resource_instance: Filter by resource instance key or ID. This parameter is required for ReBAC authorization.
                 page: Page number of the results to fetch (default: 1).
                 per_page: The number of results per page (max 100, default: 30).
             """
@@ -164,6 +157,12 @@ class PermitServer:
                 response = await client.get(url, headers=headers, params=params)
                 if 200 <= response.status_code < 300:
                     access_requests = response.json().get("data", [])
+                    for item in access_requests:
+                        requesting_user_id = item.get("requesting_user_id")
+                        if requesting_user_id:
+                            user = await self.permit.api.users.get_by_id(requesting_user_id)
+                            item["requesting_user"] = user
+
                     return access_requests
                 else:
                     raise ToolError(
@@ -237,7 +236,7 @@ class PermitServer:
 
             Args:
                 user_id: The ID or URL-friendly key of the user requesting the approval.
-                resource_instance: The specific instance of the resource (optional).
+                resource_instance: The specific instance of the resource. This parameter is required for ReBAC authorization.
                 reason: The reason for the approval request.
             """
             login = await self.permit.elements.login_as(user_id, TENANT)
@@ -283,7 +282,7 @@ class PermitServer:
             Args:
                 user_id: The ID or URL-friendly key of the user requesting the list.
                 status: Optional filter by status (e.g., "pending", "approved", "denied", "canceled").
-                resource_instance: Filter by resource instance key or ID. This parameter may be required or optional depending on the usecase.
+                resource_instance: Filter by resource instance key or ID. This parameter is required for ReBAC authorization.
                 page: Page number of the results to fetch (default: 1).
                 per_page: The number of results per page (max 100, default: 30).
             """
@@ -313,6 +312,12 @@ class PermitServer:
                     string_data = response.content.decode('utf-8')
                     data = json.loads(string_data)
                     operation_approvals = data.get("data", [])
+                    logger.info(operation_approvals)
+                    for item in operation_approvals:
+                        requesting_user_id = item.get("requesting_user_id")
+                        if requesting_user_id:
+                            user = await self.permit.api.users.get_by_id(requesting_user_id)
+                            item["requesting_user"] = user
                     return operation_approvals
                 else:
                     raise ToolError(

@@ -1,217 +1,143 @@
 import asyncio
-from typing import Optional
-from contextlib import AsyncExitStack
-from mcp import ClientSession, StdioServerParameters
-from mcp.client.stdio import stdio_client
-from anthropic import Anthropic
-from dotenv import load_dotenv
-from rich.console import Console
-from rich.prompt import Prompt
+import json
+import httpx
+import websockets
+import sys
+from typing import Dict, List, Optional
 
-load_dotenv()  # load environment variables from .env
-console = Console()
+API_URL = "http://localhost:8000"  # Change if needed
+WS_URL = "ws://localhost:8000"     # WebSocket URL
 
 
-class MCPClient:
-
-    def __init__(self):
-        # Initialize session and client objects
-        self.session: Optional[ClientSession] = None
-        self.exit_stack = AsyncExitStack()
-        self.anthropic = Anthropic()
-        self.username = None
-        self.role = None
-        self.messages = []
-
-    async def connect_to_server(self, server_script_path: str):
-        """Connect to an MCP server
-
-        Args:
-          server_script_path: Path to the server script (.py or .js)
-        """
-        is_python = server_script_path.endswith('.py')
-        is_js = server_script_path.endswith('.js')
-        if not (is_python or is_js):
-            raise ValueError("Server script must be a .py or .js file")
-
-        command = "python" if is_python else "node"
-        server_params = StdioServerParameters(
-            command=command,
-            args=[server_script_path],
-            env=None
+async def login(username: str, password: str) -> str | None:
+    async with httpx.AsyncClient() as client:
+        response = await client.post(
+            f"{API_URL}/token",
+            data={
+                "username": username,
+                "password": password,
+            },
+            headers={"Content-Type": "application/x-www-form-urlencoded"},
         )
 
-        stdio_transport = await self.exit_stack.enter_async_context(stdio_client(server_params))
-        self.stdio, self.write = stdio_transport
-        self.session = await self.exit_stack.enter_async_context(ClientSession(self.stdio, self.write))
+        if response.status_code == 200:
+            token = response.json().get("access_token")
+            print("✅ Login successful!\n")
+            return token
+        else:
+            print(f"❌ Login failed: {response.json().get('detail')}")
+            return None
 
-        await self.session.initialize()
 
-        # List available tools and resources
-        response = await self.session.list_tools()
-        tools = response.tools
+async def chat(token: str):
+    history: List[Dict] = []
+    is_processing = False  # Simple flag to track message processing state
+    is_displayed_processing = False
 
-        console.print("\nConnected to server with tools:",
-                      [tool.name for tool in tools])
+    print("\n--- Chat session started ---")
+    print("Type 'exit' to quit.\n")
 
-    async def process_query(self, query: str) -> str:
-        """Process a query using Claude and available tools"""
-        self.messages = [
-            *self.messages,
-            {
-                "role": "user",
-                "content": query
-            }
-        ]
+    try:
+        headers = {"Authorization": f"Bearer {token}"}
 
-        response = await self.session.list_tools()
-        available_tools = []
-        reserved_tools = ['list_access_requests', 'list_operation_approvals',
-                          'approve_access_request', 'approve_operation_approval', 'deny_access_request', 'deny_operation_approval']
+        async with websockets.connect(
+            f"{WS_URL}/ws/chat",
+            additional_headers=headers
+        ) as websocket:
+            # Start a background task for receiving messages
+            async def receive_messages():
+                nonlocal is_processing, history, is_displayed_processing
 
-        available_tools = [
-            {
-                "name": tool.name,
-                "description": tool.description,
-                "input_schema": tool.inputSchema
-            }
-            for tool in response.tools
-            if tool.name != 'verify_access'
-        ]
+                while True:
+                    try:
+                        message = await websocket.recv()
+                        data = json.loads(message)
 
-        if self.role != 'parent':
-            available_tools = [
-                tool for tool in available_tools
-                if tool["name"] not in reserved_tools
-            ]
+                        message_type = data.get("type")
+                        content = data.get("content")
 
-        permitio_tools_guide = await self.session.get_prompt('permitio_tools_guide')
+                        if message_type == "text":
+                            print(f"Assistant: {content}")
+                        elif message_type == "status":
+                            print(f"[Status] {content}")
+                        elif message_type == "error":
+                            print(f"⚠️ Error: {content}")
+                            is_processing = False  # Unlock on error
+                            is_displayed_processing = False
+                        elif message_type == "history_update":
+                            history = content
+                            is_processing = False  # Unlock when complete
+                            is_displayed_processing = False
+                    except Exception as e:
+                        print(f"\n⚠️ Error receiving message: {str(e)}")
+                        is_processing = False
+                        is_displayed_processing = False
+                        break
 
-        # Initial Claude API call
-        response = self.anthropic.messages.create(
-            model="claude-3-5-sonnet-20241022",
-            max_tokens=1000,
-            system=f"""
-            List **ALL** available operations once the user provides their name, including access management related opertions. **Do not** omit any operations, even those that seem restricted as tools are assigned based on privilege.
-            \n\nIf the user attempts to change their name or provides another name, notify them that it cannot be modified.
+            # Start the receiver task
+            receiver_task = asyncio.create_task(receive_messages())
 
-            \n\n{permitio_tools_guide.messages[0].content.text}
-            """,
-            messages=self.messages,
-            tools=available_tools
-        )
-        self.messages.append({
-            "role": "assistant",
-            "content": response.content
-        })
+            # Main input loop
+            while True:
+                if is_processing:
+                    if not is_displayed_processing:
+                        print("⏳ Processing previous message. Please wait...")
+                        is_displayed_processing = True
 
-        first_llm_content = [*response.content]
-        # Process response and handle tool calls
-        final_text = []
-        for content in first_llm_content:
-            if content.type == 'text':
-                final_text.append(content.text)
-            elif content.type == 'tool_use':
-                tool_name = content.name
-                tool_args = content.input
+                    await asyncio.sleep(1)
+                    continue
 
-                # Execute tool call
-                final_text.append(
-                    f"\n[Calling tool {tool_name} with args {tool_args}]\n")
-
-                result = await self.session.call_tool(tool_name, tool_args)
-
-                self.messages.append({
-                    "role": "user",
-                    "content": [
-                        {
-                            "type": "tool_result",
-                            "tool_use_id": content.id,
-                            "content": result.content
-                        }
-                    ]
-                })
-
-                # Get next response from Claude
-                response = self.anthropic.messages.create(
-                    model="claude-3-5-sonnet-20241022",
-                    max_tokens=1000,
-                    messages=self.messages,
-                    tools=available_tools
+                user_input = await asyncio.get_event_loop().run_in_executor(
+                    None, lambda: input("You: ")
                 )
 
-                tool_use_content = [
-                    content for content in response.content
-                    if content.type == 'tool_use'
-                ]
-                if len(tool_use_content):
-                    first_llm_content.append(tool_use_content[0])
+                if user_input.lower() == "exit":
+                    print("👋 Ending chat session.")
+                    break
 
-                self.messages.append({
-                    "role": "assistant",
-                    "content": response.content
-                })
+                # Set the processing flag before sending
+                is_processing = True
 
-                if hasattr(response.content[0], "text"):
-                    final_text.append(response.content[0].text)
+                # Send the message
+                payload = {
+                    "message": user_input,
+                    "history": history
+                }
 
-        return "\n".join(final_text)
+                try:
+                    await websocket.send(json.dumps(payload))
+                except Exception as e:
+                    print(f"⚠️ Error sending message: {str(e)}")
+                    is_processing = False
+                    is_displayed_processing = False
+                    break
 
-    async def chat_loop(self):
-        """Run an interactive chat loop"""
-        console.print(
-            "[bold green]Welcome to the Family Food Ordering System[/bold green]")
-        console.print("Type your queries or 'quit' to exit.")
+            # Clean up
+            receiver_task.cancel()
 
-        while True:
-            try:
-                if not self.username:
-                    username = console.input(
-                        "First, what is [i]your[/i] [bold blue]username[/]? :smiley: ").strip().lower()
-                    if username == 'quit':
-                        break
-
-                    if username:
-                        response = await self.session.call_tool('verify_access', {"username": username})
-                        if not len(response.content):
-                            console.print("Access denied", style="red")
-                            break
-
-                        self.username = username
-                        self.role = response.content[0].text
-
-                        response = await self.process_query(f"My name is {username}")
-                        console.print("\n" + response)
-                else:
-                    query = console.input(
-                        "\n[bold blue]Query[/bold blue]: ").strip()
-
-                    if query.lower() == 'quit':
-                        break
-
-                    response = await self.process_query(query)
-                    print("\n" + response)
-
-            except Exception as e:
-                print(f"\nError: {str(e)}")
-
-    async def cleanup(self):
-        """Clean up resources"""
-        await self.exit_stack.aclose()
+    except websockets.exceptions.WebSocketException as e:
+        print(f"⚠️ WebSocket connection error: {str(e)}")
+    except Exception as e:
+        print(f"⚠️ Unexpected error: {str(e)}")
 
 
 async def main():
-    if len(sys.argv) < 2:
-        print("Usage: python client.py <path_to_server_script>")
-        sys.exit(1)
+    print("👋 Welcome Food Ordering CLI tool!")
 
-    client = MCPClient()
-    try:
-        await client.connect_to_server(sys.argv[1])
-        await client.chat_loop()
-    finally:
-        await client.cleanup()
+    username = input("Username: ").strip()
+    password = input("Password: ").strip()
+
+    token = await login(username, password)
+
+    if token:
+        await chat(token)
+
 
 if __name__ == "__main__":
-    import sys
-    asyncio.run(main())
+    try:
+        asyncio.run(main())
+    except KeyboardInterrupt:
+        print("\n👋 Program terminated by user.")
+    except Exception as e:
+        print(f"⚠️ Unexpected error: {str(e)}")
+        sys.exit(1)
