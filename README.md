@@ -14,7 +14,7 @@ There are two ways the Permit MCP server can be used.
 The server can be run locally by individuals with the required credentials (environment variables), allowing them to view, approve, or deny access requests from end-users within an AI assistant like Claude Desktop.
 
 2. **Hosted / Production Deployment**:
-The server can be used to provide tools that allow end-users to send access requests from within an AI application. In this setup, the MCP server and the LLM run in a secure environment where user queries are processed. You can find an implementation of this in the [Family Food Ordering System](https://github.com/Tammibriggs/permit-mcp/tree/main/examples/food-ordering-system) example.
+The server can be used to provide tools that allow end-users to send access requests from within an AI application. In this setup, the MCP server and the LLM run in a secure environment where user queries are processed. You can find an implementation of this in the [Family Food Ordering System](https://github.com/permitio/permit-mcp/tree/main/examples/food-ordering-system) example.
 
 ## Prerequisite
 - Python >= 3.10
@@ -88,7 +88,7 @@ permit_server = PermitServer(
 ```
 With this, all other tools aside from `create_access_request` and `create_operation_approval` will be available.
 
-You can find a complete implementation in the [Family Food Ordering System](https://github.com/Tammibriggs/permit-mcp/tree/main/examples/food-ordering-system). 
+You can find a complete implementation in the [Family Food Ordering System](https://github.com/permitio/permit-mcp/tree/main/examples/food-ordering-system). 
 
 ## Best Practices
 
