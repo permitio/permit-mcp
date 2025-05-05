@@ -1,4 +1,4 @@
-# Permit.io MCP Server
+# Permit.io Access Request MCP Server
 The Permit MCP server creates and manages access to a resource from an AI application, enabling authorized individuals and end users to request and manage access to a resource using natural language.
 
 ## Features 
