@@ -1,0 +1,19 @@
+[project]
+name = "food-ordering-system"
+version = "0.1.0"
+description = "Add your description here"
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = [
+    "aiosqlite>=0.21.0",
+    "bcrypt>=4.3.0",
+    "fastapi[standard]>=0.115.12",
+    "google-genai>=1.12.1",
+    "httpx>=0.28.1",
+    "mcp>=1.2.1",
+    "permit>=2.7.2",
+    "python-dotenv>=1.0.1",
+    "python-jose[cryptography]>=3.4.0",
+    "rich>=13.9.4",
+    "websockets>=15.0.1",
+]
