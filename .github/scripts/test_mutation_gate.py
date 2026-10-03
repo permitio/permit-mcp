@@ -23,6 +23,7 @@ SCRIPT = SCRIPTS / "mutation_gate.py"
 sys.path.insert(0, str(SCRIPTS))
 
 import mutation_gate  # noqa: E402 - importable once sys.path has its directory
+from harness import git  # noqa: E402
 from mutation_gate import (  # noqa: E402
     GateError,
     Score,
@@ -30,14 +31,6 @@ from mutation_gate import (  # noqa: E402
     parse_diff,
 )
 
-GIT_ENV = {
-    "GIT_CONFIG_GLOBAL": os.devnull,
-    "GIT_CONFIG_NOSYSTEM": "1",
-    "GIT_AUTHOR_NAME": "planted",
-    "GIT_AUTHOR_EMAIL": "planted@example.invalid",
-    "GIT_COMMITTER_NAME": "planted",
-    "GIT_COMMITTER_EMAIL": "planted@example.invalid",
-}
 PYPROJECT = """\
 [project]
 name = "planted"
@@ -87,17 +80,6 @@ from calc import sign
 def test_sign() -> None:
     assert sign(5) == "positive"
 """
-
-
-def git(repo: Path, *args: str) -> str:
-    completed = subprocess.run(
-        ["git", "-C", str(repo), *args],  # noqa: S607 - git from PATH, as the gate runs it
-        env={**GIT_ENV, "PATH": os.environ["PATH"]},
-        capture_output=True,
-        text=True,
-        check=True,
-    )
-    return completed.stdout.strip()
 
 
 def planted_repo(tmp_path: Path, source: str, tests: str) -> Path:

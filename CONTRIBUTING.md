@@ -312,8 +312,9 @@ caller's name, so `ci.yml`'s live-spec drift check and Slack notification, which
 `CI`, do not run in a release or a dry run.
 
 `release.yml` calls `ci.yml` and `pages.yml`, and GitHub refuses the whole release run when a
-called job asks for a permission the calling job does not grant. `test_release.py` fails when
-one is missing, and when the `docs` job grants more than `pages.yml` asks for. The uv version in `release.yml` is the one `uv.lock` pins; change them together.
+called job asks for a permission the calling job does not grant. `test_workflows.py` fails when
+one is missing, and when a calling job grants more than the workflow it calls asks for. The uv
+version in `release.yml` is the one `uv.lock` pins; change them together.
 
 ### Cutting a release
 

@@ -6,7 +6,7 @@ name: Pages
 # release.yml calls this workflow once the release is on PyPI (its docs job
 # needs publish), so the site never documents a version PyPI does not have. A
 # called run has release.yml's event, ref and permissions: the release's tag,
-# and what release.yml's docs job grants, which test_release.py checks against
+# and what release.yml's docs job grants, which test_workflows.py checks against
 # what the jobs here ask for. workflow_dispatch is a redeploy of a published
 # release, run on its tag. Either way the ref check below refuses anything but
 # a published, non-prerelease vMAJOR.MINOR.PATCH release, so nothing deploys
@@ -38,43 +38,21 @@ jobs:
       # the source.
       pages: read  # configure-pages reads the Pages settings
     steps:
-      # The ref must be a tag that is the whole string vMAJOR.MINOR.PATCH,
-      # matched with [[ =~ ]] as release.yml's tag check matches it, and name a
-      # published release that is not a pre-release. A draft is not visible to
-      # this job's token, so gh fails on it as on a tag with no release. The
-      # tag reaches the shell through env, never through ${{ }}. Exits 1 when
-      # any of that is wrong.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          persist-credentials: false
+      # The ref must be a tag that is the whole string vMAJOR.MINOR.PATCH, the
+      # pattern release.yml's tag check uses, and name a published release that
+      # is not a pre-release. A draft is not visible to this job's token, so gh
+      # fails on it as on a tag with no release.
+      # The guard for a dispatch from a branch is the github-pages environment's v* rule.
       - name: Check that the ref is a published release
         env:
           REF_TYPE: ${{ github.ref_type }}
           TAG: ${{ github.ref_name }}
           GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}
-        run: |
-          printf -v quoted '%q' "$TAG"
-          if [[ $REF_TYPE != tag ]]; then
-            echo "::error title=Pages::The site deploys from a release tag only; this run is" \
-              "on the ${REF_TYPE} ${quoted}. Run it on a tag such as v1.2.3."
-            exit 1
-          fi
-          if [[ ! $TAG =~ ^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$ ]]; then
-            echo "::error title=Pages::The tag $quoted is not a version tag such as v1.2.3."
-            exit 1
-          fi
-          if ! release=$(gh release view "$TAG" --json isPrerelease,isDraft); then
-            echo "::error title=Pages::No published release has the tag $TAG."
-            exit 1
-          fi
-          state=$(jq -r '"draft=\(.isDraft) prerelease=\(.isPrerelease)"' <<<"$release")
-          if [[ $state != "draft=false prerelease=false" ]]; then
-            echo "::error title=Pages::The release $TAG is not a published full release" \
-              "(${state})."
-            exit 1
-          fi
-          echo "Deploying the site of the published release ${TAG}."
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
-        with:
-          persist-credentials: false
+        run: .github/scripts/release-checks.sh ref
       - uses: actions/configure-pages@45bfe0192ca1faeb007ade9deae92b16b8254a0d  # v6.0.0
       - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7  # v10.2.0
         with:

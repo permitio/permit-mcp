@@ -5,7 +5,8 @@
 #
 # Usage: fetch-binary.sh URL SHA256 NAME DEST
 #
-# Writes DEST/NAME. Exits 1 when the download fails, the checksum differs or
+# Writes DEST/NAME, and adds DEST to GITHUB_PATH when it is set, so the job's later
+# steps find NAME on PATH. Exits 1 when the download fails, the checksum differs or
 # the tarball holds no executable NAME, and 2 on a wrong number of arguments.
 # Nothing is extracted from a tarball whose checksum differs.
 set -euo pipefail
@@ -35,4 +36,7 @@ if ! tar -xzf "$archive" -C "$work" "$name" || [[ ! -f $work/$name || ! -x $work
   exit 1
 fi
 mv "$work/$name" "$dest/$name"
+if [[ -n ${GITHUB_PATH:-} ]]; then
+  echo "$dest" >>"$GITHUB_PATH"
+fi
 echo "Installed ${name} from ${url} at ${dest}/${name}."

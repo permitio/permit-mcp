@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import hashlib
 import io
+import os
 import shutil
 import subprocess
 import tarfile
@@ -18,10 +19,13 @@ import pytest
 SCRIPT = Path(__file__).parent / "fetch-binary.sh"
 
 
-def fetch(*args: str) -> subprocess.CompletedProcess[str]:
+def fetch(*args: str, github_path: str = "") -> subprocess.CompletedProcess[str]:
     bash = shutil.which("bash")
     assert bash is not None
-    return subprocess.run([bash, str(SCRIPT), *args], capture_output=True, text=True, check=False)
+    env = {**os.environ, "GITHUB_PATH": github_path}
+    return subprocess.run(
+        [bash, str(SCRIPT), *args], env=env, capture_output=True, text=True, check=False
+    )
 
 
 def tarball(tmp_path: Path, members: dict[str, int]) -> tuple[str, str]:
@@ -40,8 +44,10 @@ def tarball(tmp_path: Path, members: dict[str, int]) -> tuple[str, str]:
 def test_installs_the_named_executable(tmp_path: Path) -> None:
     url, sha256 = tarball(tmp_path, {"tool": 0o755, "README.md": 0o644})
     dest = tmp_path / "bin"
-    result = fetch(url, sha256, "tool", str(dest))
+    github_path = tmp_path / "github-path"
+    result = fetch(url, sha256, "tool", str(dest), github_path=str(github_path))
     assert result.returncode == 0, result.stdout + result.stderr
+    assert github_path.read_text() == f"{dest}\n", "later steps find it on PATH"
     assert (dest / "tool").stat().st_mode & 0o111
     assert not (dest / "README.md").exists()
     ran = subprocess.run([dest / "tool"], capture_output=True, text=True, check=True)
