@@ -1,0 +1,13 @@
+# The CI scripts are linted with the project's rules (extend), plus these
+# exceptions. They are standalone programs run by path, not a package, and
+# printing their report is their interface.
+extend = "../../pyproject.toml"
+
+[lint.per-file-ignores]
+"*.py" = ["INP001", "T201"]
+"test_*.py" = [
+    "S101",    # assert is how pytest checks things
+    "S603",    # the tests run the scripts and workflow steps under test
+    "PLR2004", # literal expected values are the point of an assertion
+    "D1",      # test names say what each test checks
+]

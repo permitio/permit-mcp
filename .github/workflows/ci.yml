@@ -1,0 +1,674 @@
+# Every check this repository runs. The `ci` job at the end, named CI, is the one
+# check to require: it fails unless every other job succeeded.
+name: CI
+
+# Pull requests into any branch, so a stacked pull request is checked before it
+# merges, and with no path filter, since a required check that never starts
+# blocks the pull request. Pushes to main, so a regression shows on main. Weekly,
+# since advisories are published against versions that already shipped; notify
+# posts that run's result to Slack. A release workflow calls this one and
+# publishes only when CI passes. A called run has the caller's event and
+# permissions: every job here needs at most `contents: read`, so the caller's job
+# must grant that, and GitHub refuses the whole run if it grants less.
+on:
+  pull_request:
+  push:
+    branches: [main]
+  schedule:
+    - cron: "0 9 * * 1"  # Mondays 09:00 UTC
+  workflow_dispatch:
+  workflow_call:
+
+permissions: {}
+
+# -u on top of GitHub's bash flags: an unset variable is an error, not "".
+defaults:
+  run:
+    shell: bash --noprofile --norc -euo pipefail {0}
+
+# The stdlib scripts in .github/scripts run as
+# `uv run --no-project --python 3.11 python`: the requires-python floor, from the
+# uv that uv.lock pins, whatever Python the runner or the job has.
+env:
+  # Where audit-deps.sh writes the trees and their Trivy reports, and the trees,
+  # in the order audit-deps.sh compiles them.
+  AUDIT_DIR: /tmp/audit
+  AUDIT_TREES: runtime-ceiling runtime-floor dev-ceiling
+  # Binaries that are downloaded and checked against the line of each release's
+  # checksums file for the runner's platform (fetch-binary.sh). Dependabot does
+  # not update these; actionlint's version matches the prek hook's.
+  ACTIONLINT_URL: https://github.com/rhysd/actionlint/releases/download/v1.7.12/actionlint_1.7.12_linux_amd64.tar.gz
+  ACTIONLINT_SHA256: 8aca8db96f1b94770f1b0d72b6dddcb1ebb8123cb3712530b08cc387b349a3d8
+  GITLEAKS_URL: https://github.com/gitleaks/gitleaks/releases/download/v8.30.1/gitleaks_8.30.1_linux_x64.tar.gz
+  GITLEAKS_SHA256: 551f6fc83ea457d62a0d98237cbad105af8d557003051f41f3e7ca7b3f2470eb
+  TRIVY_URL: https://github.com/aquasecurity/trivy/releases/download/v0.74.0/trivy_0.74.0_Linux-64bit.tar.gz
+  TRIVY_SHA256: 2ae6fe3ee734b7fdf11335663e18c75ea12dccc76062f09f164a3b0f8be4371a
+
+# Concurrency is set per job, in a group per ref. On a pull request a new push
+# cancels the older run's job. On a push to main the newer run's job waits for
+# the running one; GitHub keeps one waiting job per group and cancels any older
+# waiting one, so with three quick merges the middle run's jobs are cancelled and
+# its CI fails, while the newest run reports. Scheduled and manual runs get a
+# group of their own (the run id), so nothing cancels them or makes them wait.
+jobs:
+  # Runs every hook in .pre-commit-config.yaml on every file. prek, and the ruff,
+  # mypy and typos the hooks run, come from uv.lock, so CI runs the versions
+  # developers run and Dependabot moves them. No cache: the release workflow
+  # calls this one, and nothing restored from an earlier run may decide a gate.
+  prek:
+    name: prek
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    permissions:
+      contents: read
+    concurrency:
+      group: >-
+        ${{ github.workflow }}-${{ github.ref }}-prek-${{
+        (github.event_name == 'schedule' || github.event_name == 'workflow_dispatch')
+        && github.run_id || 'shared' }}
+      cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          persist-credentials: false
+      # CI gates only the jobs in its needs, so every other job but notify, which
+      # reports CI's result, must be listed there, once. A job may be advisory,
+      # failing without failing CI, only by being in CI's ADVISORY_JOBS, which
+      # must name jobs CI needs. CI's EXPECTED_JOBS must be the number of jobs it
+      # needs. Exits 1 when any of that is wrong, and 2 when no job is read.
+      - name: Check that CI needs every job
+        env:
+          WORKFLOW: .github/workflows/ci.yml
+        run: |
+          export LC_ALL=C
+          if ! jobs=$(yq '.jobs | keys | .[] | select(. != "ci" and . != "notify")' \
+            "$WORKFLOW" | sort) || [[ -z $jobs ]]; then
+            echo "::error title=CI needs::No jobs read from $WORKFLOW."
+            exit 2
+          fi
+          needs=$(yq '.jobs.ci.needs[]' "$WORKFLOW" | sort)
+          ci_env='.jobs.ci.steps[] | select(.name == "Check the needed jobs") | .env'
+          expected=$(yq "$ci_env | .EXPECTED_JOBS // \"\"" "$WORKFLOW")
+          advisory=$(yq "$ci_env | .ADVISORY_JOBS // \"\"" "$WORKFLOW" |
+            tr -s ' ' '\n' | grep . | sort || true)
+          status=0
+          twice=$(uniq -d <<<"$needs")
+          if [[ -n $twice ]]; then
+            echo "::error title=CI needs::CI needs ${twice//$'\n'/, } more than once."
+            status=1
+          fi
+          if [[ $jobs != "$(uniq <<<"$needs")" ]]; then
+            echo "::error title=CI needs::CI's needs must list every job in $WORKFLOW" \
+              "but CI and notify. Add a new job to CI's needs and change EXPECTED_JOBS."
+            diff <(echo "$jobs") <(uniq <<<"$needs") || true
+            status=1
+          fi
+          twice=$(uniq -d <<<"$advisory")
+          if [[ -n $twice ]]; then
+            echo "::error title=CI needs::ADVISORY_JOBS lists ${twice//$'\n'/, } twice."
+            status=1
+          fi
+          stray=$(comm -23 <(uniq <<<"$advisory") <(uniq <<<"$needs") | grep . || true)
+          if [[ -n $stray ]]; then
+            echo "::error title=CI needs::ADVISORY_JOBS lists ${stray//$'\n'/, }," \
+              "which CI does not need."
+            status=1
+          fi
+          count=$(grep -c . <<<"$needs" || true)
+          if [[ $expected != "$count" ]]; then
+            echo "::error title=CI needs::EXPECTED_JOBS in the CI job is ${expected:-not set}," \
+              "but CI needs $count jobs."
+            status=1
+          fi
+          if [[ $status -eq 0 ]]; then
+            advisory=${advisory//$'\n'/, }
+            echo "CI needs every job: ${needs//$'\n'/, }. Advisory: ${advisory:-none}."
+          fi
+          exit "$status"
+      # The uv that uv.lock pins. The project environment and the hooks'
+      # environments are built on the requires-python floor.
+      - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7  # v10.2.0
+        with:
+          version-file: uv.lock
+          python-version: "3.11"
+          enable-cache: false
+      # Exits 1 when a hook fails, and 2 when other than EXPECTED_HOOKS hooks pass:
+      # a hook skipped (through SKIP, or for want of files) or added or removed.
+      # check-json has no file to check yet, so it is the one hook not counted.
+      # Change EXPECTED_HOOKS when that changes.
+      - name: Run hooks
+        env:
+          EXPECTED_HOOKS: 19
+        run: |
+          uv run --locked --only-dev prek run --all-files --show-diff-on-failure \
+            --color=never | tee "$RUNNER_TEMP/prek.txt"
+          passed=$(grep -c 'Passed$' "$RUNNER_TEMP/prek.txt" || true)
+          if [[ $passed -ne $EXPECTED_HOOKS ]]; then
+            echo "::error title=prek::${passed} hooks passed, expected ${EXPECTED_HOOKS}."
+            exit 2
+          fi
+
+  # The offline suite on every supported Python, installed the way a consumer
+  # installs: from the ranges in pyproject.toml, not uv.lock, at the newest
+  # versions they allow (highest) and at their floors (lowest-direct). The
+  # locked leg runs what developers run.
+  tests:
+    name: tests (Python ${{ matrix.python }}, ${{ matrix.resolution }})
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    permissions:
+      contents: read
+    concurrency:
+      group: >-
+        ${{ github.workflow }}-${{ github.ref }}-tests-${{ matrix.python }}-${{
+        matrix.resolution }}-${{
+        (github.event_name == 'schedule' || github.event_name == 'workflow_dispatch')
+        && github.run_id || 'shared' }}
+      cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+    strategy:
+      fail-fast: false
+      matrix:
+        python: ["3.11", "3.12", "3.13", "3.14"]
+        resolution: [lowest-direct, highest]
+        include:
+          - python: "3.13"
+            resolution: locked
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          persist-credentials: false
+      # activate-environment creates .venv on the leg's Python and puts it on
+      # PATH, so `uv pip` installs into it and `python` runs from it. No cache:
+      # each leg resolves a different set.
+      - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7  # v10.2.0
+        with:
+          version-file: uv.lock
+          python-version: ${{ matrix.python }}
+          activate-environment: true
+          enable-cache: false
+      # The runtime dependencies are resolved alone, so the dev group cannot raise
+      # a floor, then installed with the package and the dev group under that
+      # resolution. --no-sources and --exclude-newer false resolve as a consumer
+      # does: published metadata has no [tool.uv.sources], and the publish-age
+      # cooldown in [tool.uv] applies to uv.lock only.
+      - name: Install from the ranges in pyproject.toml
+        if: matrix.resolution != 'locked'
+        env:
+          RESOLUTION: ${{ matrix.resolution }}
+        run: |
+          resolve=(--no-sources --exclude-newer false)
+          uv pip compile --quiet "${resolve[@]}" --python "$(command -v python)" \
+            --resolution "$RESOLUTION" pyproject.toml -o "$RUNNER_TEMP/runtime.txt"
+          uv pip install "${resolve[@]}" . --group dev -c "$RUNNER_TEMP/runtime.txt"
+      # lowest-direct moves past a floor it cannot install without saying so,
+      # and the leg would then test something above the floor.
+      - name: Check that the runtime dependencies are at their floors
+        if: matrix.resolution == 'lowest-direct'
+        run: >-
+          uv run --no-project --python 3.11 python .github/scripts/check_floors.py
+          pyproject.toml "$RUNNER_TEMP/runtime.txt"
+      # Proves the leg installed the resolution it compiled. Exits 1 when an
+      # installed runtime package differs from the resolution, and 2 when the
+      # resolution is empty.
+      - name: Check the installed runtime versions
+        if: matrix.resolution != 'locked'
+        env:
+          RESOLUTION: ${{ matrix.resolution }}
+        run: |
+          export LC_ALL=C
+          expected=$(grep -E '^[a-z0-9]' "$RUNNER_TEMP/runtime.txt" | sort || true)
+          if [[ -z $expected ]]; then
+            echo "::error title=Install::The $RESOLUTION resolution is empty."
+            exit 2
+          fi
+          differ=$(comm -23 <(echo "$expected") <(uv pip freeze | sort))
+          if [[ -n $differ ]]; then
+            echo "::error title=Install::Not installed as resolved: ${differ//$'\n'/, }."
+            exit 1
+          fi
+          echo "$(grep -c . <<<"$expected") runtime packages at the $RESOLUTION resolution."
+      - name: Install from uv.lock
+        if: matrix.resolution == 'locked'
+        run: uv sync --locked
+      - name: Show installed packages
+        run: uv pip list
+      - name: Import the package with warnings as errors
+        run: python -W error -c "import permit_mcp"
+      - name: Offline tests
+        run: python -m pytest -q -W error --junitxml="$RUNNER_TEMP/junit.xml"
+      # A skipped test passes pytest, and so does a run that collects nothing.
+      # Exits 1 when a test skipped, and 2 when no test ran.
+      - name: Check that every test ran
+        run: >-
+          uv run --no-project --python 3.11 python .github/scripts/check_junit.py
+          "$RUNNER_TEMP/junit.xml"
+
+  # Builds the wheel and sdist as a release does, checks what they hold with the
+  # script the release workflow runs on what it publishes, and runs the console
+  # script from the wheel installed in a fresh environment: with no
+  # configuration it must exit 2, a configuration error.
+  package:
+    name: package
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    concurrency:
+      group: >-
+        ${{ github.workflow }}-${{ github.ref }}-package-${{
+        (github.event_name == 'schedule' || github.event_name == 'workflow_dispatch')
+        && github.run_id || 'shared' }}
+      cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7  # v10.2.0
+        with:
+          version-file: uv.lock
+          python-version: "3.13"
+          enable-cache: false
+      - name: Build
+        run: uv build --no-sources --out-dir "$RUNNER_TEMP/dist"
+      - name: Check the wheel and sdist
+        run: >-
+          uv run --no-project --python 3.11 python .github/scripts/check_dist.py
+          "$RUNNER_TEMP/dist"
+      - name: Run the console script from the installed wheel
+        run: |
+          venv="$RUNNER_TEMP/smoke"
+          uv venv --quiet "$venv"
+          uv pip install --quiet --python "$venv/bin/python" --exclude-newer false \
+            "$RUNNER_TEMP"/dist/*.whl
+          status=0
+          env -i "$venv/bin/permit-mcp" </dev/null 2>"$RUNNER_TEMP/smoke.txt" || status=$?
+          cat "$RUNNER_TEMP/smoke.txt"
+          if [[ $status -ne 2 ]] || ! grep -q 'configuration error' "$RUNNER_TEMP/smoke.txt"; then
+            echo "::error title=Console script::permit-mcp with no configuration exited" \
+              "$status; expected 2 and a configuration error."
+            exit 1
+          fi
+          echo "permit-mcp exits 2 on a missing configuration, as it should."
+
+  # Scans the dependency trees a consumer can install with Trivy
+  # (.github/scripts/audit-deps.sh): the newest and the lowest runtime versions
+  # the ranges allow, resolved for Python 3.11, and the dev tree. Fails on a
+  # fixable HIGH or CRITICAL advisory, and when a scan did not complete. The
+  # report goes to the job summary and the dependency-audit artifact; each
+  # blocking advisory is also an annotation, which reaches fork pull requests.
+  # Read-only on purpose: resolving the trees can run a dependency's setup.py,
+  # and a pull request controls the dependency list.
+  audit:
+    name: audit
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    permissions:
+      contents: read
+    concurrency:
+      group: >-
+        ${{ github.workflow }}-${{ github.ref }}-audit-${{
+        (github.event_name == 'schedule' || github.event_name == 'workflow_dispatch')
+        && github.run_id || 'shared' }}
+      cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7  # v10.2.0
+        with:
+          version-file: uv.lock
+          python-version: "3.11"
+          enable-cache: false
+      - name: Install Trivy
+        run: |
+          .github/scripts/fetch-binary.sh "$TRIVY_URL" "$TRIVY_SHA256" trivy "$RUNNER_TEMP/bin"
+          echo "$RUNNER_TEMP/bin" >>"$GITHUB_PATH"
+      - name: Scan the dependency trees
+        run: .github/scripts/audit-deps.sh "$AUDIT_DIR"
+      # The summary, the annotations and the gate below read the same reports
+      # with the same tested code, so they cannot disagree. They run after a
+      # failed scan too: the summary then says what is missing.
+      - name: Write the job summary
+        if: ${{ !cancelled() }}
+        run: |
+          read -ra trees <<<"$AUDIT_TREES"
+          uv run --no-project --python 3.11 python .github/scripts/format_audit.py \
+            --dir "$AUDIT_DIR" "${trees[@]}" \
+            --context "pyproject.toml dependencies and dev group, resolved for Python 3.11" \
+            >>"$GITHUB_STEP_SUMMARY"
+      - name: Annotate blocking advisories
+        if: ${{ !cancelled() }}
+        run: |
+          read -ra trees <<<"$AUDIT_TREES"
+          uv run --no-project --python 3.11 python .github/scripts/format_audit.py \
+            --dir "$AUDIT_DIR" "${trees[@]}" --annotations
+      # Exits 1 on a fixable HIGH or CRITICAL advisory, and 2 when a report is
+      # missing, unreadable, scanned nothing or scanned other than its tree.
+      - name: Gate on fixable HIGH and CRITICAL advisories
+        if: ${{ !cancelled() }}
+        run: |
+          read -ra trees <<<"$AUDIT_TREES"
+          status=0
+          uv run --no-project --python 3.11 python .github/scripts/format_audit.py \
+            --dir "$AUDIT_DIR" "${trees[@]}" --gate || status=$?
+          case $status in
+            0) echo "No fixable HIGH or CRITICAL advisory." ;;
+            1) echo "::error title=Dependency audit::Fixable HIGH or CRITICAL advisories;" \
+              "see the job summary." ;;
+            *) echo "::error title=Dependency audit::The audit did not complete;" \
+              "see the job summary." ;;
+          esac
+          exit "$status"
+      # Uploaded whatever the gate decided: notify reads it on scheduled runs.
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
+        if: ${{ !cancelled() }}
+        with:
+          name: dependency-audit
+          path: ${{ env.AUDIT_DIR }}/
+          retention-days: 30
+          if-no-files-found: warn
+
+  # The tests of the scripts in .github/scripts, the gates' own code, and of the
+  # bash of this workflow's steps, which they run against planted results,
+  # workflows, trees and repositories. Two of them run the pinned gitleaks and
+  # Trivy, installed here as the gitleaks and audit jobs install them. pytest
+  # comes from uv.lock; -c reads the scripts' own pytest.ini rather than the
+  # package's [tool.pytest]. shellcheck runs on the scripts in the prek job.
+  audit-scripts:
+    name: audit-scripts
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    permissions:
+      contents: read
+    concurrency:
+      group: >-
+        ${{ github.workflow }}-${{ github.ref }}-audit-scripts-${{
+        (github.event_name == 'schedule' || github.event_name == 'workflow_dispatch')
+        && github.run_id || 'shared' }}
+      cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7  # v10.2.0
+        with:
+          version-file: uv.lock
+          python-version: "3.11"
+          enable-cache: false
+      - name: Install gitleaks and Trivy
+        run: |
+          .github/scripts/fetch-binary.sh "$GITLEAKS_URL" "$GITLEAKS_SHA256" gitleaks \
+            "$RUNNER_TEMP/bin"
+          .github/scripts/fetch-binary.sh "$TRIVY_URL" "$TRIVY_SHA256" trivy "$RUNNER_TEMP/bin"
+          echo "$RUNNER_TEMP/bin" >>"$GITHUB_PATH"
+      - name: Run the CI script tests
+        run: uv run --locked --only-dev pytest -c .github/scripts/pytest.ini -q .github/scripts
+
+  # Fails a pull request that brings in a dependency version, a Python package
+  # or an action, with a known HIGH or CRITICAL advisory. It compares the pull
+  # request's dependency graph with its base's, so it runs on pull requests
+  # only; elsewhere the job is skipped, which CI accepts. No comment on the pull
+  # request, so the job, and a release that calls this workflow, need no write
+  # permission; the result is in the job log.
+  dependency-review:
+    name: dependency-review
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions:
+      contents: read
+    concurrency:
+      group: ${{ github.workflow }}-${{ github.ref }}-dependency-review
+      cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+    steps:
+      - uses: actions/dependency-review-action@a1d282b36b6f3519aa1f3fc636f609c47dddb294  # v5.0.0
+        with:
+          fail-on-severity: high
+          comment-summary-in-pr: never
+
+  # actionlint and zizmor on the workflows, apart from the prek job, whose
+  # zizmor hook runs offline. Here zizmor also runs its online audits, such as
+  # known-vulnerable or impostor action commits, with the job's read-only token.
+  # actionlint is the release binary rather than rhysd/actionlint's action,
+  # which builds from unpinned base images. Both versions match the prek
+  # hooks'; change them together.
+  workflow-hardening:
+    name: workflow-hardening
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    concurrency:
+      group: >-
+        ${{ github.workflow }}-${{ github.ref }}-workflow-hardening-${{
+        (github.event_name == 'schedule' || github.event_name == 'workflow_dispatch')
+        && github.run_id || 'shared' }}
+      cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          persist-credentials: false
+      - name: actionlint
+        run: |
+          .github/scripts/fetch-binary.sh "$ACTIONLINT_URL" "$ACTIONLINT_SHA256" actionlint \
+            "$RUNNER_TEMP/bin"
+          "$RUNNER_TEMP/bin/actionlint" -color=false
+      # Findings go to the job log and annotations, not code scanning, which
+      # would need Advanced Security.
+      - name: zizmor
+        uses: zizmorcore/zizmor-action@cc914d7f3750a2d13d75c7f184a1060aa0e9d482  # v0.6.4
+        with:
+          version: 1.30.1
+          persona: regular
+          advanced-security: false
+          annotations: true
+
+  # Scans the whole history, every branch and tag, for committed secrets: a
+  # secret removed in a later commit is still in a public repository.
+  # gitleaks/gitleaks-action needs a license key for organisations, so the
+  # pinned binary runs instead. Findings are redacted in the log.
+  gitleaks:
+    name: gitleaks
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    concurrency:
+      group: >-
+        ${{ github.workflow }}-${{ github.ref }}-gitleaks-${{
+        (github.event_name == 'schedule' || github.event_name == 'workflow_dispatch')
+        && github.run_id || 'shared' }}
+      cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Install gitleaks
+        run: >-
+          .github/scripts/fetch-binary.sh "$GITLEAKS_URL" "$GITLEAKS_SHA256" gitleaks
+          "$RUNNER_TEMP/bin"
+      # A pull request controls the checkout, so gitleaks reads nothing from it:
+      # not its .gitleaks.toml (the default rules come from a config written
+      # here), not its gitleaks:allow comments, and not its .gitleaksignore.
+      # gitleaks reads a .gitleaksignore from the directory it scans whatever
+      # --gitleaks-ignore-path says, so it scans a bare mirror of the history,
+      # which has no working tree, with the ignore path an empty directory.
+      # gitleaks's own commit count depends on the git log format and can read
+      # 0, so the proof that it ran is the mirror's commit count and the bytes
+      # gitleaks reports. Exits 1 on a finding, and 2 when the checkout is
+      # shallow, the history is empty or nothing was scanned.
+      - name: Scan the history
+        run: |
+          if [[ $(git rev-parse --is-shallow-repository) != false ]]; then
+            echo "::error title=gitleaks::The checkout is shallow, so the history is incomplete."
+            exit 2
+          fi
+          history="$RUNNER_TEMP/history.git"
+          git clone --quiet --mirror . "$history"
+          commits=$(git -C "$history" rev-list --all --count)
+          if [[ ${commits:-0} -eq 0 ]]; then
+            echo "::error title=gitleaks::The history holds no commit to scan."
+            exit 2
+          fi
+          config="$RUNNER_TEMP/gitleaks.toml"
+          printf '[extend]\nuseDefault = true\n' >"$config"
+          no_ignores="$RUNNER_TEMP/gitleaks-no-ignores"
+          mkdir -p "$no_ignores"
+          status=0
+          "$RUNNER_TEMP/bin/gitleaks" git --config "$config" --gitleaks-ignore-path "$no_ignores" \
+            --ignore-gitleaks-allow --redact --no-banner --no-color --verbose --exit-code 1 \
+            "$history" 2>&1 | tee "$RUNNER_TEMP/gitleaks.txt" || status=$?
+          bytes=$(sed -nE 's/.* scanned ~([0-9]+) bytes.*/\1/p' "$RUNNER_TEMP/gitleaks.txt" |
+            tail -n 1)
+          if [[ ${bytes:-0} -eq 0 ]]; then
+            echo "::error title=gitleaks::gitleaks scanned nothing in ${commits} commits."
+            exit 2
+          fi
+          if [[ $status -ne 0 ]]; then
+            echo "::error title=gitleaks::Secrets found in the history; see the log." \
+              "Rotate each one; removing it from the files does not remove it from history."
+            exit 1
+          fi
+          echo "gitleaks scanned ${bytes} bytes of ${commits} commits and found no secret."
+
+  # The one check to require. It runs whatever happened to the jobs it needs,
+  # since GitHub counts a skipped required check as passing, and fails unless
+  # each of them succeeded: a failed, cancelled or skipped job fails it, with two
+  # exceptions. dependency-review runs on pull requests only, so on any other
+  # event it is skipped and that passes. A job in ADVISORY_JOBS (space
+  # separated) may fail without failing CI; its result is printed as a warning.
+  # Exits 1 when a job did not succeed, and 2 when the results of other than
+  # EXPECTED_JOBS jobs arrive. The prek job's needs check fails when a job is
+  # missing from needs, ADVISORY_JOBS names a job CI does not need, or
+  # EXPECTED_JOBS is not the number of jobs in needs.
+  ci:
+    name: CI
+    if: always()
+    needs:
+      - audit
+      - audit-scripts
+      - dependency-review
+      - gitleaks
+      - package
+      - prek
+      - tests
+      - workflow-hardening
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions: {}
+    concurrency:
+      group: >-
+        ${{ github.workflow }}-${{ github.ref }}-ci-${{
+        (github.event_name == 'schedule' || github.event_name == 'workflow_dispatch')
+        && github.run_id || 'shared' }}
+      cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+    steps:
+      - name: Check the needed jobs
+        env:
+          NEEDS: ${{ toJSON(needs) }}
+          EVENT: ${{ github.event_name }}
+          EXPECTED_JOBS: 8
+          ADVISORY_JOBS: ""
+        run: |
+          if ! results=$(jq -r 'to_entries[] | "\(.key) \(.value.result)"' <<<"$NEEDS"); then
+            echo "::error title=CI::Could not read the job results."
+            exit 2
+          fi
+          printf '%s\n' "$results"
+          count=$(grep -c . <<<"$results" || true)
+          if [[ $count -ne $EXPECTED_JOBS ]]; then
+            echo "::error title=CI::${count} job results, expected ${EXPECTED_JOBS}."
+            exit 2
+          fi
+          failed=$(grep -v ' success$' <<<"$results" || true)
+          if [[ $EVENT != pull_request ]]; then
+            failed=$(grep -vx 'dependency-review skipped' <<<"$failed" || true)
+          fi
+          for job in $ADVISORY_JOBS; do
+            advisory=$(awk -v job="$job" '$1 == job' <<<"$failed")
+            if [[ -n $advisory ]]; then
+              echo "::warning title=CI::Advisory job did not succeed: ${advisory}"
+            fi
+            failed=$(awk -v job="$job" '$1 != job' <<<"$failed")
+          done
+          if [[ -n $failed ]]; then
+            echo "::error title=CI::Jobs that did not succeed: ${failed//$'\n'/, }"
+            exit 1
+          fi
+          echo "All ${count} jobs passed."
+
+  # Posts one Slack message on scheduled and manual runs, when no pull request
+  # reads the result: the audit's findings, or that it did not complete, and
+  # CI's result. A called run notifies only when its caller was started by one
+  # of those events and passes the secret. Without SLACK_WEBHOOK_URL the job
+  # warns and passes. The message is rendered from the audit's artifact by the
+  # tested format_audit.py, and toJSON quotes it into the payload, so advisory
+  # text cannot break out of it.
+  notify:
+    name: notify
+    needs: [audit, ci]
+    if: always() && (github.event_name == 'schedule' || github.event_name == 'workflow_dispatch')
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions:
+      contents: read
+    concurrency:
+      group: ${{ github.workflow }}-${{ github.ref }}-notify-${{ github.run_id }}
+      cancel-in-progress: false
+    # The secrets context is not available in a step's `if:`, so the steps
+    # test this variable instead.
+    env:
+      SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
+    steps:
+      - name: Check that the Slack webhook is set
+        id: webhook
+        run: |
+          if [[ -z $SLACK_WEBHOOK_URL ]]; then
+            echo "::warning title=Slack::SLACK_WEBHOOK_URL is not set, so this run's result" \
+              "was not posted to Slack."
+            echo "set=false" >>"$GITHUB_OUTPUT"
+          else
+            echo "set=true" >>"$GITHUB_OUTPUT"
+          fi
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        if: steps.webhook.outputs.set == 'true'
+        with:
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7  # v10.2.0
+        if: steps.webhook.outputs.set == 'true'
+        with:
+          version-file: uv.lock
+          enable-cache: false
+      # A missing artifact is not an error here: the message then says the
+      # audit did not complete. The only step in this workflow allowed to fail.
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c  # v8.0.1
+        if: steps.webhook.outputs.set == 'true'
+        continue-on-error: true
+        with:
+          name: dependency-audit
+          path: ${{ env.AUDIT_DIR }}
+      - name: Render the message
+        id: message
+        if: steps.webhook.outputs.set == 'true'
+        env:
+          REPO: ${{ github.repository }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          CI_RESULT: ${{ needs.ci.result }}
+        run: |
+          read -ra trees <<<"$AUDIT_TREES"
+          delimiter="EOF_$(openssl rand -hex 16)"
+          {
+            echo "text<<${delimiter}"
+            uv run --no-project --python 3.11 python .github/scripts/format_audit.py \
+              --dir "$AUDIT_DIR" "${trees[@]}" --slack \
+              --repo "$REPO" --run-url "$RUN_URL" --ci-result "$CI_RESULT"
+            echo "${delimiter}"
+          } >>"$GITHUB_OUTPUT"
+      - uses: slackapi/slack-github-action@dcb1066f776dd043e64d0e8ba94ca15cc7e1875d  # v4.0.0
+        if: steps.webhook.outputs.set == 'true'
+        with:
+          webhook: ${{ secrets.SLACK_WEBHOOK_URL }}
+          webhook-type: incoming-webhook
+          payload: |
+            text: ${{ toJSON(steps.message.outputs.text) }}

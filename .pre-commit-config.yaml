@@ -69,6 +69,15 @@ repos:
         files: (\.pyi?|^pyproject\.toml|^uv\.lock)$
         pass_filenames: false
         require_serial: true
+      # The CI scripts, which the `files` set in pyproject.toml leaves out: they
+      # are standalone programs run by path, not part of the package.
+      - id: mypy-ci-scripts
+        name: mypy (.github/scripts)
+        entry: uv run --locked mypy .github/scripts
+        language: system
+        files: ^(\.github/scripts/.*\.py|pyproject\.toml|uv\.lock)$
+        pass_filenames: false
+        require_serial: true
       - id: typos
         name: typos
         entry: uv run --locked typos --force-exclude
