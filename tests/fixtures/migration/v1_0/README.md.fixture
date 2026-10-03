@@ -1,0 +1,11 @@
+# Family food ordering
+
+Add the Permit server to Claude Desktop:
+
+    "command": "uvx", "args": ["permit-mcp"]
+
+Put the settings in its env block. The server acts as PERMIT_MCP_USER.
+
+## API
+
+- `GET /members/{user_id}/orders` lists the orders of one member.

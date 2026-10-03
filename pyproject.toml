@@ -92,10 +92,16 @@ ban-relative-imports = "all"
 [tool.ruff.lint.per-file-ignores]
 "src/permit_mcp/_log.py" = ["TID251"]
 "tests/**/*.py" = ["S101", "D1", "PLR2004", "TID251"]
+# A command-line script run by path: printing is its interface, and it is not in a package.
+"skills/*/scripts/*.py" = ["T201", "INP001"]
+
+[tool.ruff.per-file-target-version]
+# The migration scanner runs on the project being migrated, which 0.1 allowed on Python 3.10.
+"skills/*/scripts/*.py" = "py310"
 
 [tool.mypy]
 python_version = "3.11"
-files = ["src", "tests"]
+files = ["src", "tests", "skills"]
 strict = true
 warn_unreachable = true
 enable_error_code = [

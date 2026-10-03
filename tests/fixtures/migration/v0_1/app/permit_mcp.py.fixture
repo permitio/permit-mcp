@@ -1,0 +1,13 @@
+"""A copy of the 0.1 server, kept next to the app so that `from permit_mcp import ...` works."""
+
+import os
+
+from mcp.server.fastmcp import FastMCP
+
+TENANT = os.getenv("TENANT", "default")
+
+
+class PermitServer:
+    def __init__(self, mcp: FastMCP, exclude_tools: list[str] | None = None) -> None:
+        self.mcp = mcp
+        self.exclude_tools = exclude_tools or []

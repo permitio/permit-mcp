@@ -1,0 +1,20 @@
+{
+  "mcpServers": {
+    "filesystem": {
+      "command": "npx",
+      "args": ["-y", "@modelcontextprotocol/server-filesystem", "/ABSOLUTE/PATH/TO/menus"]
+    },
+    "permit": {
+      "command": "uvx",
+      "args": ["permit-mcp"],
+      "env": {
+        "PERMIT_API_KEY": "permit_key_example",
+        "PERMIT_RESOURCE": "restaurants",
+        "PERMIT_TENANT": "default",
+        "PERMIT_ACCESS_REQUEST_ELEMENT": "restaurant-requests",
+        "PERMIT_OPERATION_APPROVAL_ELEMENT": "order-approvals",
+        "PERMIT_MCP_USER": "parent"
+      }
+    }
+  }
+}

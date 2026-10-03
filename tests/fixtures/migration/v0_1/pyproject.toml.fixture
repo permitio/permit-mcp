@@ -1,0 +1,8 @@
+[project]
+name = "family-food-orders"
+version = "0.1.0"
+requires-python = ">=3.10"
+dependencies = [
+    "mcp[cli]>=1.2.1,<2",
+    "permit-mcp @ git+https://github.com/permitio/permit-mcp",
+]

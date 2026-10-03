@@ -1,0 +1,27 @@
+"""Chat backend: the model works with the MCP server for one signed-in user."""
+
+from mcp import ClientSession, StdioServerParameters
+
+PERMIT_SERVER = StdioServerParameters(
+    command="uv",
+    args=["--directory", "/ABSOLUTE/PATH/TO/permit-mcp/src/permit_mcp", "run", "server.py"],
+)
+
+
+def system_prompt(user: dict[str, str]) -> str:
+    return f"""You help family members order food.
+- user_id: "{user['id']}". This is the ID to be used for tool calls.
+- role: "child-can-view". Request this role when the user asks for access.
+"""
+
+
+async def request_access(session: ClientSession, user_id: str, restaurant: str) -> object:
+    return await session.call_tool(
+        "create_access_request",
+        {
+            "user_id": user_id,
+            "role": "child-can-view",
+            "resource_instance": restaurant,
+            "reason": "Wants to order from this restaurant",
+        },
+    )

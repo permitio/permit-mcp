@@ -1,0 +1,54 @@
+"""Family food ordering: the MCP server that the chat backend starts."""
+
+import contextlib
+import os
+from collections.abc import AsyncIterator
+from typing import Any
+
+from mcp.server.mcpserver import Context, MCPServer
+from mcp.server.mcpserver.exceptions import ToolError
+
+from permit_mcp import IdentityError, PermitTools, Settings
+
+TENANT = os.getenv("PERMIT_TENANT", "default")
+
+
+async def signed_in_member(ctx: Context[Any, Any], /) -> str:
+    """Return the Permit user key of the member this session belongs to."""
+    member = ctx.request_context.request
+    if member is None:
+        raise IdentityError("no signed-in member")
+    return str(member)
+
+
+tools = PermitTools(Settings.from_env(), signed_in_member)
+
+
+@contextlib.asynccontextmanager
+async def lifespan(_server: MCPServer[None]) -> AsyncIterator[None]:
+    try:
+        yield
+    finally:
+        await tools.aclose()
+
+
+server = MCPServer("family_food_ordering", lifespan=lifespan)
+tools.register(server, exclude={"approve_access_request", "deny_access_request"})
+
+
+@server.tool()
+async def list_dishes(restaurant_id: str) -> list[str]:
+    """List the dishes of a restaurant.
+
+    Args:
+        restaurant_id: The key of the restaurant; dishes are stored per user_id.
+    """
+    if not restaurant_id:
+        raise ToolError("restaurant_id is required")
+    query = "SELECT name FROM dishes WHERE restaurant_id = ? AND user_id = ?"
+    row = {"user_id": restaurant_id}
+    return [query, row["user_id"]]
+
+
+if __name__ == "__main__":
+    server.run("stdio")
