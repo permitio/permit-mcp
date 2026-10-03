@@ -10,5 +10,4 @@ wheels/
 .venv
 .env
 
-food_ordering.db
 uv.lock

@@ -12,5 +12,3 @@ dependencies = [
     "python-dotenv>=1.0.1",
 ]
 
-[tool.uv.workspace]
-members = ["examples/food-ordering-system"]
