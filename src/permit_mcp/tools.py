@@ -178,7 +178,7 @@ class PermitTools:
             CHECK_PERMISSION: (
                 self._check_permission,
                 (
-                    "Ask Permit whether the acting user may perform action on "
+                    "Ask Permit whether the acting user may perform an action on "
                     f"{target}, or on one instance of it (the instance key, not the ID). "
                     "Returns allowed: true or false. On the cloud PDP, RBAC and ReBAC policies "
                     "are evaluated; a permission that only an ABAC policy grants comes back "
