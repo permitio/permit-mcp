@@ -35,6 +35,11 @@ job, and how to take a dependency release younger than the 7-day cooldown. In sh
   requests it sends and what it returns; `test_every_tool_has_a_case` in
   `tests/test_tools_wire.py` fails when a tool has none. A new tool also needs a row in the
   README tools table (`tests/test_docs.py`), and a new setting a row in the configuration table.
+- **API coverage.** A tool that calls a Permit operation outside the scope of
+  `.github/scripts/api_coverage_allowlist.json` needs it added to the scope and the snapshot
+  refreshed. A tool that starts calling an in-scope operation needs that operation's `missing`
+  entry deleted, or the report flags the entry as stale. A test that sends to a server of its
+  own declares it with `tests.api_record.note_origin`. See CONTRIBUTING.md.
 - **README and upgrade-guide Python blocks are type-checked** by `tests/test_docs.py`. Mark a
   block that shows 0.1 code with `<!-- docs-check: skip, 0.1 code -->` on the line before it.
 - **New CI jobs** go into the `needs` of the `CI` job in `.github/workflows/ci.yml`, and

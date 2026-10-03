@@ -1,0 +1,92 @@
+{
+  "scope": {
+    "control-plane": {
+      "tags": ["Access Requests (EAP)", "Operation Approval (EAP)"],
+      "operations": [
+        "GET /v2/api-key/scope",
+        "GET /v2/facts/{proj_id}/{env_id}/resource_instances",
+        "GET /v2/facts/{proj_id}/{env_id}/users/{user_id}"
+      ]
+    },
+    "pdp": {
+      "tags": [],
+      "operations": ["POST /allowed"]
+    }
+  },
+  "out_of_scope": "permit-mcp exposes access requests, operation approvals and one permission check; the rest of the Permit API is for the SDKs, the CLI and the dashboard.",
+  "operations": [
+    {
+      "api": "control-plane",
+      "operation": "GET /v2/facts/{proj_id}/{env_id}/access_requests/{elements_config_id}/user/{user_id}/tenant/{tenant_id}/{access_request_id}",
+      "status": "missing",
+      "reason": "get access request: not exposed as a tool; list_access_requests returns the requests."
+    },
+    {
+      "api": "control-plane",
+      "operation": "PATCH /v2/facts/{proj_id}/{env_id}/access_requests/{elements_config_id}/user/{user_id}/tenant/{tenant_id}/{access_request_id}/reviewer",
+      "status": "missing",
+      "reason": "update access request reviewer: not exposed as a tool."
+    },
+    {
+      "api": "control-plane",
+      "operation": "PUT /v2/facts/{proj_id}/{env_id}/access_requests/{elements_config_id}/user/{user_id}/tenant/{tenant_id}/{access_request_id}/cancel",
+      "status": "missing",
+      "reason": "cancel access request on the facts route: cancel_access_request uses the Elements route, with an Elements login of the acting user."
+    },
+    {
+      "api": "control-plane",
+      "operation": "GET /v2/elements/{proj_id}/{env_id}/config/{elements_config_id}/access_requests",
+      "status": "missing",
+      "reason": "list access requests on the Elements route: the facts route is used instead."
+    },
+    {
+      "api": "control-plane",
+      "operation": "POST /v2/elements/{proj_id}/{env_id}/config/{elements_config_id}/access_requests",
+      "status": "missing",
+      "reason": "create access request on the Elements route: the facts route is used instead."
+    },
+    {
+      "api": "control-plane",
+      "operation": "GET /v2/elements/{proj_id}/{env_id}/config/{elements_config_id}/access_requests/{access_request_id}",
+      "status": "missing",
+      "reason": "get access request: not exposed as a tool; list_access_requests returns the requests."
+    },
+    {
+      "api": "control-plane",
+      "operation": "PATCH /v2/elements/{proj_id}/{env_id}/config/{elements_config_id}/access_requests/{access_request_id}/reviewer",
+      "status": "missing",
+      "reason": "update access request reviewer: not exposed as a tool."
+    },
+    {
+      "api": "control-plane",
+      "operation": "PUT /v2/elements/{proj_id}/{env_id}/config/{elements_config_id}/access_requests/{access_request_id}/approve",
+      "status": "missing",
+      "reason": "approve access request on the Elements route: the facts route is used instead."
+    },
+    {
+      "api": "control-plane",
+      "operation": "PUT /v2/elements/{proj_id}/{env_id}/config/{elements_config_id}/access_requests/{access_request_id}/deny",
+      "status": "missing",
+      "reason": "deny access request on the Elements route: the facts route is used instead."
+    },
+    {
+      "api": "control-plane",
+      "operation": "GET /v2/elements/{proj_id}/{env_id}/config/{elements_config_id}/operation_approval/{operation_approval_id}",
+      "status": "missing",
+      "reason": "get operation approval: not exposed as a tool; list_operation_approvals returns the approvals."
+    },
+    {
+      "api": "control-plane",
+      "operation": "PATCH /v2/elements/{proj_id}/{env_id}/config/{elements_config_id}/operation_approval/{operation_approval_id}/reviewer",
+      "status": "missing",
+      "reason": "update operation approval reviewer: not exposed as a tool."
+    }
+  ],
+  "sdk_only": [
+    {
+      "api": "control-plane",
+      "request": "POST /v2/auth/elements_login_as",
+      "reason": "The Elements login that the operation-approval tools and cancel_access_request send first, to act as the acting user. The public spec does not list it."
+    }
+  ]
+}

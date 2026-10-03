@@ -1001,6 +1001,125 @@ def test_the_pinned_gitleaks_finds_a_planted_token_despite_the_repository_s_supp
     assert "ghp_" not in completed.stdout, "findings are redacted"
 
 
+# --- the API coverage report ----------------------------------------------------------
+
+LIVE = "(github.event_name == 'schedule' || github.event_name == 'workflow_dispatch')"
+SNAPSHOT_STEP = ("tests", "Snapshot the live control-plane spec")
+COVERAGE_STEP = ("tests", "Report API coverage")
+COMMITTED_INVENTORY = REPO_ROOT / ".github" / "api-specs" / "control-plane.json"
+
+
+def test_the_offline_tests_record_where_the_report_reads(workflow: dict[str, Any]) -> None:
+    offline = find_step(workflow, ("tests", "Offline tests"))
+    assert offline["env"] == {
+        "PERMIT_MCP_API_RECORD": (
+            "${{ matrix.resolution == 'locked' && "
+            "format('{0}/api-record.jsonl', runner.temp) || '' }}"
+        )
+    }
+    report = find_step(workflow, COVERAGE_STEP)["run"]
+    assert '--record "$RUNNER_TEMP/api-record.jsonl"' in report
+    assert '--origins "$RUNNER_TEMP/api-record.origins.json"' in report
+    steps = [step_key(step) for step in workflow["jobs"]["tests"]["steps"]]
+    assert steps.index("Offline tests") < steps.index(SNAPSHOT_STEP[1])
+    assert steps.index(SNAPSHOT_STEP[1]) < steps.index(COVERAGE_STEP[1])
+    assert steps.index(COVERAGE_STEP[1]) < steps.index("actions/upload-artifact")
+
+
+def plant_coverage_record(runner_temp: Path) -> None:
+    from test_api_coverage import ORIGINS, wire_record  # noqa: PLC0415 - one planted record
+
+    lines = "".join(json.dumps(line) + "\n" for line in wire_record())
+    (runner_temp / "api-record.jsonl").write_text(lines, encoding="utf-8")
+    origins = runner_temp / "api-record.origins.json"
+    origins.write_text(json.dumps(ORIGINS), encoding="utf-8")
+
+
+def test_a_pull_request_reports_against_the_committed_inventory(
+    workflow: dict[str, Any], tmp_path: Path
+) -> None:
+    plant_coverage_record(tmp_path)
+    summary = tmp_path / "summary.md"
+    completed = run_step(
+        workflow,
+        COVERAGE_STEP,
+        tmp_path,
+        {"EVENT": "pull_request", "GITHUB_STEP_SUMMARY": str(summary)},
+    )
+    assert completed.returncode == 0, completed.stdout + completed.stderr
+    text = summary.read_text(encoding="utf-8")
+    assert "| Control plane | 24 | 13 | 0 | 11 |" in text
+    assert "taken from https://api.permit.io/v2/openapi.json" in text
+    assert "baseline" not in text
+
+
+def live_spec(tmp_path: Path, *, drift: bool) -> Path:
+    """An OpenAPI document of the committed inventory and 200 out-of-scope operations.
+
+    With `drift`, list_access_requests's resource_instance_id query parameter is renamed.
+    """
+    from test_api_coverage import as_openapi  # noqa: PLC0415 - one planted spec
+
+    document = as_openapi(COMMITTED_INVENTORY, filler=200)
+    if drift:
+        path = (
+            "/v2/facts/{proj_id}/{env_id}/access_requests/{elements_config_id}/user/{user_id}"
+            "/tenant/{tenant_id}"
+        )
+        for parameter in document["paths"][path]["get"]["parameters"]:
+            if parameter["name"] == "resource_instance_id":
+                parameter["name"] = "resource_instance"
+    spec = tmp_path / "planted-openapi.json"
+    spec.write_text(json.dumps(document), encoding="utf-8")
+    return spec
+
+
+@pytest.mark.parametrize("event", ["schedule", "workflow_dispatch"])
+@pytest.mark.parametrize("drift", [False, True], ids=["unchanged", "drifted"])
+def test_scheduled_and_manual_runs_check_the_live_spec_for_drift(
+    workflow: dict[str, Any], tmp_path: Path, event: str, *, drift: bool
+) -> None:
+    spec = live_spec(tmp_path, drift=drift)
+    stand_in(
+        tmp_path / "bin",
+        "curl",
+        'echo "$*" >"$RUNNER_TEMP/curl.txt"\n'
+        "while [[ $# -gt 0 ]]; do [[ $1 == --output ]] && out=$2; shift; done\n"
+        f'cp "{spec}" "$out"',
+    )
+    snapshot = run_step(workflow, SNAPSHOT_STEP, tmp_path, {})
+    assert snapshot.returncode == 0, snapshot.stdout + snapshot.stderr
+    assert "--fail" in (tmp_path / "curl.txt").read_text(encoding="utf-8")
+    assert "https://api.permit.io/v2/openapi.json" in (tmp_path / "curl.txt").read_text()
+    live = tmp_path / "api-specs" / "control-plane.json"
+    assert live.exists()
+    if not drift:
+        assert live.read_text(encoding="utf-8") == COMMITTED_INVENTORY.read_text(encoding="utf-8")
+
+    plant_coverage_record(tmp_path)
+    summary = tmp_path / "summary.md"
+    env = {"EVENT": event, "GITHUB_STEP_SUMMARY": str(summary)}
+    completed = run_step(workflow, COVERAGE_STEP, tmp_path, env)
+    text = summary.read_text(encoding="utf-8")
+    assert f"- Control plane: `{live}`" in text
+    assert "- Control plane baseline: `.github/api-specs/control-plane.json`" in text
+    if drift:
+        assert completed.returncode == 1
+        assert "'query resource_instance_id'" in text
+        assert "'query resource_instance'" in text
+    else:
+        assert completed.returncode == 0, completed.stdout + completed.stderr
+
+
+def test_a_failed_spec_download_fails_the_snapshot_step(
+    workflow: dict[str, Any], tmp_path: Path
+) -> None:
+    stand_in(tmp_path / "bin", "curl", "exit 22")
+    completed = run_step(workflow, SNAPSHOT_STEP, tmp_path, {})
+    assert completed.returncode == 22
+    assert not (tmp_path / "api-specs").exists()
+
+
 # --- the workflow's gates are wired as they say ---------------------------------
 
 GATING_STEP_IFS = {
@@ -1010,6 +1129,11 @@ GATING_STEP_IFS = {
     ),
     ("tests", "Check the installed runtime versions"): "matrix.resolution != 'locked'",
     ("tests", "Install from uv.lock"): "matrix.resolution == 'locked'",
+    ("tests", "Snapshot the live control-plane spec"): f"matrix.resolution == 'locked' && {LIVE}",
+    ("tests", "Report API coverage"): "matrix.resolution == 'locked'",
+    ("tests", "actions/upload-artifact"): (
+        f"${{{{ !cancelled() && matrix.resolution == 'locked' && {LIVE} }}}}"
+    ),
     ("audit", "Write the job summary"): "${{ !cancelled() }}",
     ("audit", "Annotate blocking advisories"): "${{ !cancelled() }}",
     ("audit", "Gate on fixable HIGH and CRITICAL advisories"): "${{ !cancelled() }}",

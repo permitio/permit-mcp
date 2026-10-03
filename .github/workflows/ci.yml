@@ -134,11 +134,10 @@ jobs:
           enable-cache: false
       # Exits 1 when a hook fails, and 2 when other than EXPECTED_HOOKS hooks pass:
       # a hook skipped (through SKIP, or for want of files) or added or removed.
-      # check-json has no file to check yet, so it is the one hook not counted.
       # Change EXPECTED_HOOKS when that changes.
       - name: Run hooks
         env:
-          EXPECTED_HOOKS: 19
+          EXPECTED_HOOKS: 20
         run: |
           uv run --locked --only-dev prek run --all-files --show-diff-on-failure \
             --color=never | tee "$RUNNER_TEMP/prek.txt"
@@ -151,7 +150,8 @@ jobs:
   # The offline suite on every supported Python, installed the way a consumer
   # installs: from the ranges in pyproject.toml, not uv.lock, at the newest
   # versions they allow (highest) and at their floors (lowest-direct). The
-  # locked leg runs what developers run.
+  # locked leg runs what developers run, and reports the API coverage of the
+  # requests its tests sent.
   tests:
     name: tests (Python ${{ matrix.python }}, ${{ matrix.resolution }})
     runs-on: ubuntu-24.04
@@ -234,7 +234,14 @@ jobs:
         run: uv pip list
       - name: Import the package with warnings as errors
         run: python -W error -c "import permit_mcp"
+      # On the locked leg, tests/api_record.py writes the method, origin, path,
+      # status and test id of each request the tests send to PERMIT_MCP_API_RECORD,
+      # and the origins of the mock servers beside it, for the API coverage report.
+      # The other legs leave it empty and record nothing.
       - name: Offline tests
+        env:
+          PERMIT_MCP_API_RECORD: >-
+            ${{ matrix.resolution == 'locked' && format('{0}/api-record.jsonl', runner.temp) || '' }}
         run: python -m pytest -q -W error --junitxml="$RUNNER_TEMP/junit.xml"
       # A skipped test passes pytest, and so does a run that collects nothing.
       # Exits 1 when a test skipped, and 2 when no test ran.
@@ -242,6 +249,54 @@ jobs:
         run: >-
           uv run --no-project --python 3.11 python .github/scripts/check_junit.py
           "$RUNNER_TEMP/junit.xml"
+      # Weekly and manual runs check the live control-plane spec for drift: this
+      # writes its in-scope inventory as the committed one was written. Other
+      # runs read only the committed inventory, so a pull request's result depends
+      # on its commit alone.
+      - name: Snapshot the live control-plane spec
+        if: >-
+          matrix.resolution == 'locked' && (github.event_name == 'schedule'
+          || github.event_name == 'workflow_dispatch')
+        env:
+          SPEC_URL: https://api.permit.io/v2/openapi.json
+        run: |
+          curl --fail --silent --show-error --proto '=https' --max-time 60 --retry 3 \
+            --output "$RUNNER_TEMP/openapi.json" "$SPEC_URL"
+          uv run --no-project --python 3.11 python .github/scripts/api_coverage.py snapshot \
+            control-plane "$RUNNER_TEMP/openapi.json" --source "$SPEC_URL" \
+            --allowlist .github/scripts/api_coverage_allowlist.json \
+            --out-dir "$RUNNER_TEMP/api-specs"
+      # Which in-scope Permit API and PDP operations the tests sent, and why each
+      # other one is untested or missing; the report goes to the job summary. On
+      # weekly and manual runs it reads the live inventory, and any in-scope
+      # operation added, removed or changed since the committed one is a finding.
+      # Exits 1 on a finding, and 2 when the report did not run.
+      - name: Report API coverage
+        if: matrix.resolution == 'locked'
+        env:
+          EVENT: ${{ github.event_name }}
+        run: |
+          committed=.github/api-specs/control-plane.json
+          control_plane=(--spec "control-plane=$committed")
+          if [[ $EVENT == schedule || $EVENT == workflow_dispatch ]]; then
+            control_plane=(--spec "control-plane=$RUNNER_TEMP/api-specs/control-plane.json"
+              --baseline "control-plane=$committed")
+          fi
+          uv run --no-project --python 3.11 python .github/scripts/api_coverage.py report \
+            "${control_plane[@]}" --spec pdp=.github/api-specs/pdp.json \
+            --allowlist .github/scripts/api_coverage_allowlist.json \
+            --record "$RUNNER_TEMP/api-record.jsonl" \
+            --origins "$RUNNER_TEMP/api-record.origins.json" --summary "$GITHUB_STEP_SUMMARY"
+      # The live inventory, to commit when the drift is expected (CONTRIBUTING.md).
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
+        if: >-
+          ${{ !cancelled() && matrix.resolution == 'locked' && (github.event_name ==
+          'schedule' || github.event_name == 'workflow_dispatch') }}
+        with:
+          name: control-plane-spec
+          path: ${{ runner.temp }}/api-specs/
+          retention-days: 30
+          if-no-files-found: warn
 
   # Builds the wheel and sdist as a release does, checks what they hold with the
   # script the release workflow runs on what it publishes, and runs the console

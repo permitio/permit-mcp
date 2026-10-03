@@ -12,6 +12,8 @@ import contextlib
 import json
 from typing import TYPE_CHECKING, Any, Self
 
+from tests.api_record import CONTROL_PLANE, PDP, note_origin
+
 if TYPE_CHECKING:
     from collections.abc import Mapping
     from types import TracebackType
@@ -39,6 +41,8 @@ class KeepAliveServer:
 
     async def __aenter__(self) -> Self:
         self._server = await asyncio.start_server(self._serve, "127.0.0.1", 0)
+        # The route table may answer for the Permit API and the PDP alike.
+        note_origin(self.url, CONTROL_PLANE, PDP)
         return self
 
     async def __aexit__(

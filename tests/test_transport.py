@@ -9,6 +9,7 @@ import pytest
 from werkzeug import Response
 
 from permit_mcp import permit_api
+from tests.api_record import CONTROL_PLANE, note_origin
 from tests.support import (
     CASES,
     ELEMENT_AUTH,
@@ -47,6 +48,7 @@ async def test_http_proxy_from_the_environment_is_used(
     monkeypatch.setenv("HTTP_PROXY", base_url(api))
     # A name under .invalid never resolves, so only the proxy can answer for it.
     settings = settings_for("http://permit.invalid")
+    note_origin(settings.api_url, CONTROL_PLANE)
 
     result = await call_tool(settings, "list_resource_instances", INSTANCES.arguments)
 
@@ -139,6 +141,7 @@ async def test_timeout_is_reported_without_a_status(
 async def test_cookies_from_one_call_are_not_sent_by_the_next(api: HTTPServer) -> None:
     # A host name, not an IP address: cookie jars refuse cookies from IP addresses.
     settings = settings_for(f"http://localhost:{api.port}")
+    note_origin(settings.api_url, CONTROL_PLANE)
     case = CASES["list_operation_approvals"]
 
     def login(_request: Request) -> Response:

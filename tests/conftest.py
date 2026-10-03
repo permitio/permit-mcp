@@ -6,6 +6,8 @@ from typing import TYPE_CHECKING
 import pytest
 from pytest_httpserver import HTTPServer
 
+from tests import api_record
+from tests.api_record import CONTROL_PLANE, PDP, note_origin
 from tests.support import SCOPE, SCOPE_PATH, base_url, settings_for
 
 if TYPE_CHECKING:
@@ -40,6 +42,11 @@ ENV_VARIABLES = (
 )
 
 
+def pytest_configure(config: pytest.Config) -> None:
+    """Record the requests the tests send when PERMIT_MCP_API_RECORD is set."""
+    api_record.start(config)
+
+
 @pytest.fixture(autouse=True)
 def clean_environment(monkeypatch: pytest.MonkeyPatch) -> None:
     """Keep the developer's own Permit, proxy and netrc variables out of every test."""
@@ -47,9 +54,10 @@ def clean_environment(monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.delenv(name, raising=False)
 
 
-def _serve() -> Iterator[HTTPServer]:
+def _serve(api: str) -> Iterator[HTTPServer]:
     server = HTTPServer(host="127.0.0.1", port=0, threaded=True)
     server.start()
+    note_origin(base_url(server), api)
     yield server
     server.clear()
     server.stop()
@@ -58,13 +66,13 @@ def _serve() -> Iterator[HTTPServer]:
 @pytest.fixture(scope="session")
 def api_server() -> Iterator[HTTPServer]:
     """One local server for the session; `api` resets it for each test."""
-    yield from _serve()
+    yield from _serve(CONTROL_PLANE)
 
 
 @pytest.fixture(scope="session")
 def pdp_server() -> Iterator[HTTPServer]:
     """A second local server for the session, the PDP; `pdp` resets it for each test."""
-    yield from _serve()
+    yield from _serve(PDP)
 
 
 @pytest.fixture
