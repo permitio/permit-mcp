@@ -8,6 +8,6 @@ wheels/
 
 # Virtual environments
 .venv
-.env
 
-uv.lock
+# Local configuration
+.env

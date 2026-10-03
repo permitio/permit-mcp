@@ -1,14 +1,58 @@
+[build-system]
+# Must allow the uv version the release workflow pins, so releases build with
+# that uv's built-in backend. Bumped by hand with it.
+requires = ["uv_build>=0.12.19,<0.13"]
+build-backend = "uv_build"
+
 [project]
 name = "permit-mcp"
 version = "0.1.0"
-description = "Add your description here"
+description = "MCP server for Permit.io access requests and operation approvals"
 readme = "README.md"
-requires-python = ">=3.10"
+requires-python = ">=3.11"
+license = "MIT"
+license-files = ["LICENSE"]
+authors = [{ name = "Permit.io", email = "support@permit.io" }]
+keywords = ["permit", "authorization", "mcp", "access-requests", "approvals"]
+classifiers = [
+    "Operating System :: OS Independent",
+    "Programming Language :: Python",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Programming Language :: Python :: 3.14",
+]
+# Open ranges on purpose: consumers resolve these against their own tree, so
+# the floors are the exposure that CI scans.
 dependencies = [
-    "aiosqlite>=0.21.0",
-    "mcp>=1.2.1",
-    "permit>=2.7.2",
-    "httpx>=0.28.1",
-    "python-dotenv>=1.0.1",
+    "httpx>=0.28.1,<1",
+    "mcp>=1.30.0,<2",
+    "permit>=3.0.0,<4",
+    "python-dotenv>=1.0.1,<2",
 ]
 
+[project.urls]
+Homepage = "https://github.com/permitio/permit-mcp"
+Repository = "https://github.com/permitio/permit-mcp"
+Issues = "https://github.com/permitio/permit-mcp/issues"
+Documentation = "https://docs.permit.io/ai-security/access-request-mcp/overview"
+
+[project.scripts]
+permit-mcp = "permit_mcp.server:main"
+
+[dependency-groups]
+# Exact pins: uv.lock is the single source of these tool versions.
+dev = [
+    "pytest==9.1.1",
+    "uv==0.12.19",
+]
+
+[tool.uv]
+# A floor, not an exact pin: Dependabot's bundled uv must still run.
+required-version = ">=0.12.19"
+# Publish-age cooldown, matching Dependabot's 7 days.
+exclude-newer = "7 days"
+# permit 3.0.0 is the release that fixes the CVEs reachable through permit's own
+# floors; it is Permit's package and is adopted without the cooldown.
+exclude-newer-package = { permit = false }
