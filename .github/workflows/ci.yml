@@ -589,7 +589,8 @@ jobs:
   # tests catch fewer than 80% of the mutants. HEAD is the merge commit, so HEAD^1
   # is the base branch. Bounded at 4 test processes at a time (the runner's CPUs),
   # 3072 MiB of address space each, which the gate checks the kernel enforces
-  # before it starts, and 10 minutes for the run. It runs on pull requests only, as
+  # before it starts, and 25 minutes for the run: a pull request that changes the
+  # whole package (about 1,500 mutants) takes about 12. It runs on pull requests only, as
   # every change reaches main through one; elsewhere the job is skipped, which CI
   # accepts with a notice. The report, surviving mutants included, is in the job
   # summary.
@@ -597,7 +598,7 @@ jobs:
     name: mutation
     if: github.event_name == 'pull_request'
     runs-on: ubuntu-24.04
-    timeout-minutes: 15
+    timeout-minutes: 30
     permissions:
       contents: read
     concurrency:
@@ -621,7 +622,7 @@ jobs:
         run: |
           status=0
           uv run --locked python .github/scripts/mutation_gate.py --base HEAD^1 \
-            --threshold 80 --workers 4 --memory-mib 3072 --max-minutes 10 || status=$?
+            --threshold 80 --workers 4 --memory-mib 3072 --max-minutes 25 || status=$?
           case $status in
             0) ;;
             1) echo "::error title=Mutation tests::The tests catch too few mutants of the" \

@@ -151,7 +151,8 @@ def test_every_job_needs_at_most_contents_read(workflow: dict[str, Any]) -> None
 
 def test_every_job_has_a_timeout(workflow: dict[str, Any]) -> None:
     for name, job in workflow["jobs"].items():
-        assert job["timeout-minutes"] <= 15, name
+        limit = 30 if name == "mutation" else 15
+        assert job["timeout-minutes"] <= limit, name
 
 
 def test_every_checkout_drops_its_credentials(workflow: dict[str, Any]) -> None:
@@ -1500,7 +1501,7 @@ def test_mutation_step_maps_the_gate_s_exits(
     assert completed.returncode == status
     assert log.read_text() == (
         "run --locked python .github/scripts/mutation_gate.py --base HEAD^1 --threshold 80"
-        " --workers 4 --memory-mib 3072 --max-minutes 10\n"
+        " --workers 4 --memory-mib 3072 --max-minutes 25\n"
     )
     if annotation is None:
         assert "::error" not in completed.stdout
@@ -1519,7 +1520,7 @@ def test_the_mutation_job_diffs_the_merge_commit_against_its_base(
     assert setup_uv["with"]["python-version"] == "3.13"
     assert install == {"name": "Install from uv.lock", "run": "uv sync --locked"}
     assert gate["name"] == MUTATION_STEP[1]
-    assert job["timeout-minutes"] == 15
+    assert job["timeout-minutes"] == 30
     assert "strategy" not in job
 
 
