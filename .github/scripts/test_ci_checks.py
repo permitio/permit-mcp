@@ -220,15 +220,40 @@ def test_scheduled_jobs_are_the_needed_jobs_that_run_in_scheduled_and_manual_run
     assert find_step(workflow, CI_STEP)["env"]["WORKFLOW"] == "${{ github.workflow }}"
 
 
-@pytest.mark.parametrize("result", ["failure", "cancelled", "skipped"])
+@pytest.mark.parametrize("result", ["failure", "cancelled"])
 @pytest.mark.parametrize("event", ["schedule", "workflow_dispatch"])
-def test_ci_warns_when_the_e2e_suite_did_not_succeed_in_a_run_it_belongs_to(
+def test_ci_warns_when_the_e2e_suite_failed_in_a_run_it_belongs_to(
     workflow: dict[str, Any], needed: list[str], tmp_path: Path, result: str, event: str
 ) -> None:
     completed = run_ci(workflow, tmp_path, results(needed, {"e2e": result}), event)
     assert completed.returncode == 0, completed.stdout + completed.stderr
     assert f"::warning title=CI::Advisory job did not succeed: e2e {result}" in completed.stdout
     assert "::notice" not in completed.stdout
+    assert "::error" not in completed.stdout
+
+
+@pytest.mark.parametrize("event", ["schedule", "workflow_dispatch"])
+def test_ci_fails_when_the_e2e_suite_skipped_in_a_run_it_belongs_to(
+    workflow: dict[str, Any], needed: list[str], tmp_path: Path, event: str
+) -> None:
+    completed = run_ci(workflow, tmp_path, results(needed, {"e2e": "skipped"}), event)
+    assert completed.returncode == 1, completed.stdout + completed.stderr
+    assert (
+        f"::error title=CI::e2e was skipped on CI's own {event} run, which it must run in:"
+        " its if: no longer matches this run."
+    ) in completed.stdout
+    assert "::error title=CI::Jobs that did not succeed: e2e skipped" in completed.stdout
+    assert "::warning" not in completed.stdout
+    assert "::notice" not in completed.stdout
+
+
+def test_ci_names_a_skipped_e2e_suite_beside_the_other_jobs_that_did_not_succeed(
+    workflow: dict[str, Any], needed: list[str], tmp_path: Path
+) -> None:
+    needs = results(needed, {"e2e": "skipped", "audit": "failure"})
+    completed = run_ci(workflow, tmp_path, needs, "schedule")
+    assert completed.returncode == 1
+    assert "Jobs that did not succeed: audit failure, e2e skipped" in completed.stdout
 
 
 @pytest.mark.parametrize(
@@ -421,11 +446,43 @@ def test_notify_reports_after_ci_on_scheduled_and_manual_runs_only(
 ) -> None:
     notify = workflow["jobs"]["notify"]
     assert "notify" not in needed
-    assert set(notify["needs"]) == {"audit", "ci"}
+    assert set(notify["needs"]) == {"audit", "ci", "e2e"}
     assert notify["if"] == (
         "always() && github.workflow == 'CI' &&"
         " (github.event_name == 'schedule' || github.event_name == 'workflow_dispatch')"
     )
+
+
+@pytest.mark.parametrize(
+    ("result", "line"),
+    [
+        ("success", ">e2e: success"),
+        ("failure", ">e2e: failure (did not run, or a test failed)"),
+        ("cancelled", ">e2e: cancelled (did not run to the end)"),
+        ("skipped", ">e2e: skipped (did not run)"),
+    ],
+)
+def test_notify_s_message_carries_the_e2e_result(
+    workflow: dict[str, Any], tmp_path: Path, result: str, line: str
+) -> None:
+    step = find_step(workflow, ("notify", "Render the message"))
+    assert step["env"]["E2E_RESULT"] == "${{ needs.e2e.result }}"
+    stand_in(tmp_path / "bin", "uv", f'shift 5\nexec "{sys.executable}" "$@"')
+    output = tmp_path / "output"
+    env = {
+        "AUDIT_DIR": str(tmp_path / "audit"),
+        "GITHUB_OUTPUT": str(output),
+        "REPO": "o/r",
+        "RUN_URL": "https://example.invalid/run",
+        "CI_RESULT": "success",
+        "E2E_RESULT": result,
+    }
+    completed = run_step(workflow, ("notify", "Render the message"), tmp_path, env)
+    assert completed.returncode == 0, completed.stdout + completed.stderr
+    text = output.read_text().splitlines()
+    assert text[0].startswith("text<<EOF_")
+    assert text[-1] == text[0].removeprefix("text<<")
+    assert text[-4:-1] == [">CI: success", line, "><https://example.invalid/run|View the run>"]
 
 
 # --- the needs check in the prek job -------------------------------------------
@@ -1008,6 +1065,20 @@ Line:        1
 8:14PM WRN leaks found: 1"""
 
 
+def git_stand_in(tmp_path: Path, shallow: str, commits: str) -> None:
+    """Answer (is shallow, commit count) as given, skip the mirror clone, pass the rest on."""
+    stand_in(
+        tmp_path / "bin",
+        "git",
+        f'case "$1 $2" in\n'
+        f'  "rev-parse --is-shallow-repository") echo {shallow} ;;\n'
+        f"  clone*) ;;\n"
+        f'  *) if [[ " $* " == *" rev-list "* ]]; then echo {commits};'
+        f' else exec "{tool("git")}" "$@"; fi ;;\n'
+        f"esac",
+    )
+
+
 def run_scan(
     workflow: dict[str, Any],
     tmp_path: Path,
@@ -1016,16 +1087,10 @@ def run_scan(
     exit_code: int,
     git_answers: tuple[str, str] = ("false", "14"),
 ) -> subprocess.CompletedProcess[str]:
-    """Run the step with stand-ins for gitleaks, and for git answering (is shallow, commits)."""
-    shallow, commits = git_answers
-    stand_in(
-        tmp_path / "bin",
-        "git",
-        f'for arg in "$@"; do case $arg in rev-parse) echo {shallow} ;;'
-        f" rev-list) echo {commits} ;; esac; done",
-    )
+    """Run the step on a push with stand-ins for gitleaks, and for git (is shallow, commits)."""
+    git_stand_in(tmp_path, *git_answers)
     stand_in(tmp_path / "bin", "gitleaks", f"cat >&2 <<'OUT'\n{output}\nOUT\nexit {exit_code}")
-    return run_step(workflow, GITLEAKS_STEP, tmp_path, {})
+    return run_step(workflow, GITLEAKS_STEP, tmp_path, {"EVENT": "push"})
 
 
 def test_scan_passes_a_clean_history(workflow: dict[str, Any], tmp_path: Path) -> None:
@@ -1041,7 +1106,7 @@ def test_scan_reads_no_configuration_from_the_checkout(
     assert completed.returncode == 0, completed.stdout + completed.stderr
     recording = f'printf "%s\\n" "$@" >"{tmp_path}/args"\ncat >&2 <<\'OUT\'\n{CLEAN_SCAN}\nOUT'
     stand_in(tmp_path / "bin", "gitleaks", recording)
-    assert run_step(workflow, GITLEAKS_STEP, tmp_path, {}).returncode == 0
+    assert run_step(workflow, GITLEAKS_STEP, tmp_path, {"EVENT": "push"}).returncode == 0
     args = (tmp_path / "args").read_text().splitlines()
     assert args[0] == "git"
     assert args[args.index("--config") + 1] == f"{tmp_path}/gitleaks.toml"
@@ -1143,15 +1208,15 @@ def planted_repo(tmp_path: Path, *, token: bool, suppressions: bool) -> Path:
 
 
 def run_real_scan(
-    workflow: dict[str, Any], tmp_path: Path, repo: Path
+    workflow: dict[str, Any], tmp_path: Path, repo: Path, event: str = "push"
 ) -> subprocess.CompletedProcess[str]:
-    """Run the step with the pinned gitleaks in the planted repository."""
+    """Run the step on `event` with the pinned gitleaks in the planted repository."""
     gitleaks = tool("gitleaks")
     version = subprocess.run([gitleaks, "version"], capture_output=True, text=True, check=True)
     assert version.stdout.strip() == pinned_version("GITLEAKS_URL", workflow)
     (tmp_path / "bin").mkdir(exist_ok=True)
     shutil.copy(gitleaks, tmp_path / "bin" / "gitleaks")
-    env = {**GIT_ENV, "HOME": os.environ["HOME"]}
+    env = {**GIT_ENV, "HOME": os.environ["HOME"], "EVENT": event}
     return run_step(workflow, GITLEAKS_STEP, tmp_path, env, cwd=repo)
 
 
@@ -1185,14 +1250,133 @@ def test_the_pinned_gitleaks_finds_a_planted_token_despite_the_repository_s_supp
     assert "ghp_" not in completed.stdout, "findings are redacted"
 
 
+ACCEPT_FILE = Path(".github") / "gitleaks-accept.txt"
+
+
+def commit_accept_list(repo: Path, text: str | None, message: str) -> None:
+    """Commit `text` as the accept list, or commit without one when it is None."""
+    if text is None:
+        (repo / "other.txt").write_text(message)
+    else:
+        (repo / ".github").mkdir(exist_ok=True)
+        (repo / ACCEPT_FILE).write_text(text)
+    git(repo, "add", ".")
+    git(repo, "commit", "--quiet", "-m", message)
+
+
 def checkout_with_accept_list(tmp_path: Path, text: str) -> Path:
     checkout = tmp_path / "checkout"
-    (checkout / ".github").mkdir(parents=True)
-    (checkout / ".github" / "gitleaks-accept.txt").write_text(text)
+    checkout.mkdir()
+    git(checkout, "init", "--quiet")
+    commit_accept_list(checkout, text, "accept")
     return checkout
 
 
+def merged_pull_request(tmp_path: Path, base: str | None, pull_request: str | None) -> Path:
+    """A checkout of a pull request's merge commit, as actions/checkout makes on pull_request.
+
+    `base` and `pull_request` are the accept list on each side; None commits none.
+    """
+    repo = tmp_path / "checkout"
+    repo.mkdir()
+    git(repo, "init", "--quiet", "--initial-branch=main")
+    (repo / "README.md").write_text("planted\n")
+    commit_accept_list(repo, base, "base")
+    git(repo, "checkout", "--quiet", "-b", "pr")
+    commit_accept_list(repo, pull_request, "pull request")
+    git(repo, "checkout", "--quiet", "main")
+    git(repo, "merge", "--quiet", "--no-ff", "-m", "merge", "pr")
+    return repo
+
+
+def accepted_in_scan(
+    workflow: dict[str, Any], tmp_path: Path, repo: Path, event: str
+) -> tuple[subprocess.CompletedProcess[str], list[str]]:
+    """Run the step with real git and a clean stand-in gitleaks; return what it accepted."""
+    stand_in(tmp_path / "bin", "gitleaks", f"cat >&2 <<'OUT'\n{CLEAN_SCAN}\nOUT")
+    env = {**GIT_ENV, "EVENT": event}
+    completed = run_step(workflow, GITLEAKS_STEP, tmp_path, env, cwd=repo)
+    ignored = (tmp_path / "gitleaks-ignores" / ".gitleaksignore").read_text().split()
+    return completed, ignored
+
+
 FINGERPRINT = "0" * 40 + ":tests/x.py:generic-api-key:3"
+BASE_ENTRY = "a" * 40 + ":base.txt:github-pat:1"
+PULL_REQUEST_ENTRY = "b" * 40 + ":pr.txt:github-pat:1"
+
+
+def test_a_pull_request_reads_the_accept_list_from_its_base(
+    workflow: dict[str, Any], tmp_path: Path
+) -> None:
+    base = f"{BASE_ENTRY}  # reviewed on main\n"
+    repo = merged_pull_request(tmp_path, base, f"{base}{PULL_REQUEST_ENTRY}  # mine\n")
+    completed, ignored = accepted_in_scan(workflow, tmp_path, repo, "pull_request")
+    assert completed.returncode == 0, completed.stdout + completed.stderr
+    assert ignored == [BASE_ENTRY]
+    assert f"Accepted as a false positive: {BASE_ENTRY}" in completed.stdout
+    assert PULL_REQUEST_ENTRY not in completed.stdout
+    assert "Reading .github/gitleaks-accept.txt from HEAD^1." in completed.stdout
+    assert "::warning" not in completed.stdout
+
+
+def test_a_pull_request_that_deletes_the_list_still_gets_the_base_s(
+    workflow: dict[str, Any], tmp_path: Path
+) -> None:
+    repo = merged_pull_request(tmp_path, f"{BASE_ENTRY}  # reviewed on main\n", None)
+    git(repo, "rm", "--quiet", str(ACCEPT_FILE))
+    git(repo, "commit", "--quiet", "--amend", "-m", "merge without the list")
+    completed, ignored = accepted_in_scan(workflow, tmp_path, repo, "pull_request")
+    assert completed.returncode == 0, completed.stdout + completed.stderr
+    assert ignored == [BASE_ENTRY]
+    assert "::warning" not in completed.stdout
+
+
+def test_a_pull_request_reads_its_own_list_when_the_base_has_none(
+    workflow: dict[str, Any], tmp_path: Path
+) -> None:
+    repo = merged_pull_request(tmp_path, None, f"{PULL_REQUEST_ENTRY}  # the first list\n")
+    completed, ignored = accepted_in_scan(workflow, tmp_path, repo, "pull_request")
+    assert completed.returncode == 0, completed.stdout + completed.stderr
+    assert ignored == [PULL_REQUEST_ENTRY]
+    assert (
+        "::warning title=gitleaks::The base (HEAD^1) has no .github/gitleaks-accept.txt, so the"
+        " pull request's own list is read. Review every entry in it."
+    ) in completed.stdout
+    assert "Reading .github/gitleaks-accept.txt from HEAD." in completed.stdout
+
+
+def test_a_pull_request_without_a_list_on_either_side_accepts_nothing(
+    workflow: dict[str, Any], tmp_path: Path
+) -> None:
+    repo = merged_pull_request(tmp_path, None, None)
+    completed, ignored = accepted_in_scan(workflow, tmp_path, repo, "pull_request")
+    assert completed.returncode == 0, completed.stdout + completed.stderr
+    assert ignored == []
+    assert "::warning" not in completed.stdout
+    assert "::notice" not in completed.stdout
+
+
+@pytest.mark.parametrize("event", ["push", "schedule", "workflow_dispatch"])
+def test_other_events_read_the_accept_list_from_head(
+    workflow: dict[str, Any], tmp_path: Path, event: str
+) -> None:
+    base = f"{BASE_ENTRY}  # reviewed on main\n"
+    repo = merged_pull_request(tmp_path, base, f"{base}{PULL_REQUEST_ENTRY}  # merged\n")
+    (repo / ACCEPT_FILE).write_text("not committed, so not read\n")
+    completed, ignored = accepted_in_scan(workflow, tmp_path, repo, event)
+    assert completed.returncode == 0, completed.stdout + completed.stderr
+    assert ignored == [BASE_ENTRY, PULL_REQUEST_ENTRY]
+    assert "::warning" not in completed.stdout
+
+
+def test_a_pull_request_whose_head_has_no_parent_exits_2(
+    workflow: dict[str, Any], tmp_path: Path
+) -> None:
+    checkout = checkout_with_accept_list(tmp_path, f"{PULL_REQUEST_ENTRY}  # mine\n")
+    completed, ignored = accepted_in_scan(workflow, tmp_path, checkout, "pull_request")
+    assert completed.returncode == 2, completed.stdout + completed.stderr
+    assert "::error title=gitleaks::HEAD has no parent" in completed.stdout
+    assert ignored == []
 
 
 @pytest.mark.parametrize(
@@ -1209,15 +1393,12 @@ def test_an_accept_line_without_a_fingerprint_and_a_reason_exits_2(
     workflow: dict[str, Any], tmp_path: Path, line: str
 ) -> None:
     checkout = checkout_with_accept_list(tmp_path, f"# comment\n\n{line}\n")
-    stand_in(
-        tmp_path / "bin",
-        "git",
-        'for arg in "$@"; do case $arg in rev-parse) echo false ;; rev-list) echo 3 ;; esac; done',
-    )
-    stand_in(tmp_path / "bin", "gitleaks", f"cat >&2 <<'OUT'\n{CLEAN_SCAN}\nOUT")
-    completed = run_step(workflow, GITLEAKS_STEP, tmp_path, {}, cwd=checkout)
+    completed, _ = accepted_in_scan(workflow, tmp_path, checkout, "push")
     assert completed.returncode == 2, completed.stdout + completed.stderr
-    assert "gitleaks-accept.txt:3 is not a fingerprint and a reason" in completed.stdout
+    assert (
+        "::error title=gitleaks::HEAD:.github/gitleaks-accept.txt:3 is not a fingerprint"
+        " and a reason."
+    ) in completed.stdout
 
 
 def commit_token(repo: Path, name: str) -> str:
@@ -1257,6 +1438,34 @@ def test_an_accepted_fingerprint_hides_only_its_own_finding(
     assert completed.returncode == 1, completed.stdout + completed.stderr
     assert "File:        second.txt" in completed.stdout
     assert "File:        first.txt" not in completed.stdout
+
+
+def test_the_pinned_gitleaks_finds_a_token_a_pull_request_accepts_for_itself(
+    workflow: dict[str, Any], tmp_path: Path
+) -> None:
+    repo = tmp_path / "checkout"
+    repo.mkdir()
+    git(repo, "init", "--quiet", "--initial-branch=main")
+    token_a = commit_token(repo, "a.txt")
+    commit_accept_list(repo, f"{token_a}  # reviewed on main\n", "accept a")
+    git(repo, "checkout", "--quiet", "-b", "pr")
+    token_b = commit_token(repo, "b.txt")
+    commit_accept_list(repo, f"{token_a}  # reviewed on main\n{token_b}  # mine\n", "accept b")
+    git(repo, "checkout", "--quiet", "main")
+    git(repo, "merge", "--quiet", "--no-ff", "-m", "merge", "pr")
+
+    for run_dir in ("pull-request", "push"):
+        (tmp_path / run_dir).mkdir()
+    completed = run_real_scan(workflow, tmp_path / "pull-request", repo, "pull_request")
+    assert completed.returncode == 1, completed.stdout + completed.stderr
+    assert "File:        b.txt" in completed.stdout
+    assert "File:        a.txt" not in completed.stdout
+    assert f"Accepted as a false positive: {token_a}" in completed.stdout
+    assert f"Accepted as a false positive: {token_b}" not in completed.stdout
+
+    # Once merged, the entry is the base's and counts.
+    merged = run_real_scan(workflow, tmp_path / "push", repo, "push")
+    assert merged.returncode == 0, merged.stdout + merged.stderr
 
 
 # --- the API coverage report ----------------------------------------------------------

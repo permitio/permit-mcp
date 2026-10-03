@@ -131,8 +131,10 @@ release, a repository owner must:
 
 The `CI` check passes only when every job below succeeded, apart from the advisory `e2e`.
 `dependency-review` and `mutation` run on pull requests only; on other events CI accepts them
-as skipped, with a notice. `e2e` runs in CI's scheduled and manual runs only; elsewhere CI
-accepts it as skipped, with a notice.
+as skipped, with a notice. `e2e` runs in CI's scheduled and manual runs only; elsewhere,
+including the run a release calls, CI accepts it as skipped, with a notice. In CI's scheduled
+and manual runs a skipped `e2e` fails CI, since there it means the job's `if:` broke; a failed
+`e2e` is a warning only.
 
 | Job | What it runs |
 | --- | --- |
@@ -148,7 +150,8 @@ accepts it as skipped, with a notice.
 | `gitleaks` | gitleaks on the whole history |
 | `e2e` | The end-to-end suite against Permit (below), then a check that no test skipped, with the secrets of the `e2e` environment. Advisory: when it fails, CI passes and prints a warning. Scheduled and manual runs of CI only |
 
-A scheduled run each Monday also posts the audit result to Slack.
+CI's scheduled run each Monday, and a manual run, also post to Slack: the audit result, CI's
+result and the `e2e` result.
 
 ### End-to-end tests
 

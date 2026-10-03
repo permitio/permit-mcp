@@ -703,14 +703,21 @@ jobs:
       # The one exception is .github/gitleaks-accept.txt: exact fingerprints
       # (commit:file:rule:line) of reviewed false positives, each with a reason.
       # A fingerprint names one commit, so an entry can never hide a secret
-      # committed later, and every entry is printed as a notice.
+      # committed later, and every entry is printed as a notice. On a pull request
+      # the list is read from the base, HEAD^1 (the merge commit's first parent),
+      # so a pull request cannot accept a secret it commits itself; an entry it
+      # adds counts once it is merged. When the base has no list at all, as before
+      # the pull request that adds the file merges, the pull request's own list is
+      # read, with a warning. On other events the list is read from HEAD.
       # gitleaks's own commit count depends on the git log format and can read
       # 0, so the proof that it ran is the mirror's commit count and the bytes
       # gitleaks reports. Exits 1 on a finding, and 2 when the checkout is
-      # shallow, the history is empty, nothing was scanned or the accept list
-      # has a line that is not a fingerprint and a reason.
+      # shallow, the history is empty, a pull request's HEAD has no parent,
+      # nothing was scanned or the accept list has a line that is not a
+      # fingerprint and a reason.
       - name: Scan the history
         env:
+          EVENT: ${{ github.event_name }}
           ACCEPT_LINE: '^([0-9a-f]{40}:[^:[:space:]]+:[a-z0-9-]+:[0-9]+)[[:space:]]+#[[:space:]]*[^[:space:]]'
         run: |
           if [[ $(git rev-parse --is-shallow-repository) != false ]]; then
@@ -730,18 +737,39 @@ jobs:
           mkdir -p "$ignores"
           : >"$ignores/.gitleaksignore"
           accept=.github/gitleaks-accept.txt
-          if [[ -f $accept ]]; then
+          source=HEAD
+          in_pull_request=$(git ls-tree --name-only HEAD -- "$accept")
+          if [[ $EVENT == pull_request ]]; then
+            if ! git rev-parse --verify --quiet 'HEAD^1^{commit}' >/dev/null; then
+              echo "::error title=gitleaks::HEAD has no parent, so there is no base to read" \
+                "${accept} from."
+              exit 2
+            fi
+            in_base=$(git ls-tree --name-only HEAD^1 -- "$accept")
+            if [[ -n $in_base ]]; then
+              source=HEAD^1
+            elif [[ -n $in_pull_request ]]; then
+              echo "::warning title=gitleaks::The base (HEAD^1) has no ${accept}, so the" \
+                "pull request's own list is read. Review every entry in it."
+            fi
+          fi
+          listed=$(git ls-tree --name-only "$source" -- "$accept")
+          if [[ -n $listed ]]; then
+            accepted="$RUNNER_TEMP/gitleaks-accept.txt"
+            git show "${source}:${accept}" >"$accepted"
+            echo "Reading ${accept} from ${source}."
             line_no=0
             while IFS= read -r line || [[ -n $line ]]; do
               line_no=$((line_no + 1))
               [[ $line =~ ^[[:space:]]*(#|$) ]] && continue
               if [[ ! $line =~ $ACCEPT_LINE ]]; then
-                echo "::error title=gitleaks::${accept}:${line_no} is not a fingerprint and a reason."
+                echo "::error title=gitleaks::${source}:${accept}:${line_no} is not a fingerprint" \
+                  "and a reason."
                 exit 2
               fi
               echo "${BASH_REMATCH[1]}" >>"$ignores/.gitleaksignore"
               echo "::notice title=gitleaks::Accepted as a false positive: ${line}"
-            done <"$accept"
+            done <"$accepted"
           fi
           status=0
           "$RUNNER_TEMP/bin/gitleaks" git --config "$config" --gitleaks-ignore-path "$ignores" \
@@ -766,12 +794,13 @@ jobs:
   # (CONTRIBUTING.md). Advisory: a Permit outage must not fail CI, which prints
   # its failure as a warning. It runs in CI's own scheduled and manual runs only,
   # never on a pull request: the secrets are the e2e environment's, which only
-  # main may deploy to, so no other branch's workflow gets them. Elsewhere it is skipped,
-  # and CI passes that with a notice (SCHEDULED_JOBS). Without the secrets
-  # pytest exits 2, saying the suite did not run. One concurrency group for the
-  # project: runs wait for each other, and none is cancelled for a newer one
-  # (GitHub still drops a waiting run when another starts waiting). The scratch
-  # environment's API key is masked as soon as it is read. No cache.
+  # main may deploy to, so no other branch's workflow gets them. Elsewhere it is
+  # skipped, and CI passes that with a notice (SCHEDULED_JOBS); a skip in CI's
+  # own scheduled or manual run fails CI, since it means this if: broke. Without
+  # the secrets pytest exits 2, saying the suite did not run. One concurrency
+  # group for the project: runs wait for each other, and none is cancelled for a
+  # newer one (GitHub still drops a waiting run when another starts waiting).
+  # The scratch environment's API key is masked as soon as it is read. No cache.
   e2e:
     name: e2e
     if: >-
@@ -817,9 +846,11 @@ jobs:
   # three exceptions. The jobs in PULL_REQUEST_JOBS (dependency-review and
   # mutation) run on pull requests only, so on any other event each is skipped,
   # and that passes with a notice. The jobs in SCHEDULED_JOBS (e2e) run in CI's
-  # own scheduled and manual runs only, so anywhere else a skip passes with a
-  # notice. A job in ADVISORY_JOBS (space separated) may fail without failing
-  # CI; its result is printed as a warning.
+  # own scheduled and manual runs only, so anywhere else, a run release.yml
+  # calls included, a skip passes with a notice. In CI's own scheduled and
+  # manual runs a skip fails CI, even for an advisory job: there it means the
+  # job's if: no longer matches. A job in ADVISORY_JOBS (space separated) may
+  # fail or be cancelled without failing CI; its result is printed as a warning.
   # Exits 1 when a job did not succeed, and 2 when the results of other than
   # EXPECTED_JOBS jobs arrive. The prek job's needs check fails when a job is
   # missing from needs, ADVISORY_JOBS names a job CI does not need, or
@@ -879,15 +910,21 @@ jobs:
               failed=$(grep -vx "$job skipped" <<<"$failed" || true)
             done
           fi
-          if [[ $WORKFLOW != CI || ($EVENT != schedule && $EVENT != workflow_dispatch) ]]; then
-            for job in $SCHEDULED_JOBS; do
-              if grep -qx "$job skipped" <<<"$failed"; then
-                echo "::notice title=CI::$job runs in CI's scheduled and manual runs only;" \
-                  "skipped on this $EVENT run."
-              fi
-              failed=$(grep -vx "$job skipped" <<<"$failed" || true)
-            done
-          fi
+          skipped_in_own_run=""
+          for job in $SCHEDULED_JOBS; do
+            if ! grep -qx "$job skipped" <<<"$failed"; then
+              continue
+            fi
+            failed=$(grep -vx "$job skipped" <<<"$failed" || true)
+            if [[ $WORKFLOW == CI && ($EVENT == schedule || $EVENT == workflow_dispatch) ]]; then
+              echo "::error title=CI::$job was skipped on CI's own $EVENT run, which it must" \
+                "run in: its if: no longer matches this run."
+              skipped_in_own_run+=$'\n'"$job skipped"
+            else
+              echo "::notice title=CI::$job runs in CI's scheduled and manual runs only;" \
+                "skipped on this $EVENT run."
+            fi
+          done
           for job in $ADVISORY_JOBS; do
             advisory=$(awk -v job="$job" '$1 == job' <<<"$failed")
             if [[ -n $advisory ]]; then
@@ -895,6 +932,7 @@ jobs:
             fi
             failed=$(awk -v job="$job" '$1 != job' <<<"$failed")
           done
+          failed=$(grep . <<<"${failed}${skipped_in_own_run}" || true)
           if [[ -n $failed ]]; then
             echo "::error title=CI::Jobs that did not succeed: ${failed//$'\n'/, }"
             exit 1
@@ -902,15 +940,15 @@ jobs:
           echo "All ${count} jobs passed."
 
   # Posts one Slack message on scheduled and manual runs, when no pull request
-  # reads the result: the audit's findings, or that it did not complete, and
-  # CI's result. A called run never notifies: its github.workflow is the
-  # caller's name, not CI. Without SLACK_WEBHOOK_URL the job
-  # warns and passes. The message is rendered from the audit's artifact by the
+  # reads the result: the audit's findings, or that it did not complete, CI's
+  # result, and the e2e suite's result, which CI treats as advisory. A called
+  # run never notifies: its github.workflow is the caller's name, not CI.
+  # Without SLACK_WEBHOOK_URL the job warns and passes. The message is rendered from the audit's artifact by the
   # tested format_audit.py, and toJSON quotes it into the payload, so advisory
   # text cannot break out of it.
   notify:
     name: notify
-    needs: [audit, ci]
+    needs: [audit, ci, e2e]
     if: >-
       always() && github.workflow == 'CI' &&
       (github.event_name == 'schedule' || github.event_name == 'workflow_dispatch')
@@ -960,6 +998,7 @@ jobs:
           REPO: ${{ github.repository }}
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
           CI_RESULT: ${{ needs.ci.result }}
+          E2E_RESULT: ${{ needs.e2e.result }}
         run: |
           read -ra trees <<<"$AUDIT_TREES"
           delimiter="EOF_$(openssl rand -hex 16)"
@@ -967,7 +1006,8 @@ jobs:
             echo "text<<${delimiter}"
             uv run --no-project --python 3.11 python .github/scripts/format_audit.py \
               --dir "$AUDIT_DIR" "${trees[@]}" --slack \
-              --repo "$REPO" --run-url "$RUN_URL" --ci-result "$CI_RESULT"
+              --repo "$REPO" --run-url "$RUN_URL" --ci-result "$CI_RESULT" \
+              --e2e-result "$E2E_RESULT"
             echo "${delimiter}"
           } >>"$GITHUB_OUTPUT"
       - uses: slackapi/slack-github-action@dcb1066f776dd043e64d0e8ba94ca15cc7e1875d  # v4.0.0
