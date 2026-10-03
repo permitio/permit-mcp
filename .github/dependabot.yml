@@ -33,6 +33,10 @@ updates:
       # release, and the docs job fails on output it does not expect.
       docs-tools:
         patterns: ["zensical", "mkdocstrings", "mkdocstrings-python"]
+      # Alone: .github/scripts/mutation_gate.py relies on mutmut internals that its
+      # docstring lists, and a mutmut update is reviewed against that list.
+      mutmut:
+        patterns: ["mutmut"]
       minor-and-patch:
         update-types: ["minor", "patch"]
     ignore:

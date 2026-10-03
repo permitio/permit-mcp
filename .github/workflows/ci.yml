@@ -184,8 +184,11 @@ jobs:
           - python: "3.13"
             resolution: locked
     steps:
+      # Depth 2: on a pull request, HEAD is the merge commit and HEAD^1 the base it
+      # was merged into, which the surface report compares with.
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
         with:
+          fetch-depth: 2
           persist-credentials: false
       # activate-environment creates .venv on the leg's Python and puts it on
       # PATH, so `uv pip` installs into it and `python` runs from it. No cache:
@@ -308,6 +311,46 @@ jobs:
           path: ${{ runner.temp }}/api-specs/
           retention-days: 30
           if-no-files-found: warn
+      # Lists the changes a pull request makes to tests/snapshots/surface.json (the
+      # tools as clients list them, and the public API), each labelled BREAKING or
+      # non-breaking, in the job summary. The tests above already proved the snapshot
+      # matches the code. It compares with HEAD^1, the merge commit's first parent:
+      # the base this run merged, not the base branch's tip, which may have moved on.
+      # Breaking changes are expected while 1.0 is prepared, so they are a warning,
+      # not a failure. surface_diff.py exits 0 (no breaking change), 1 (breaking
+      # changes) or 2 (could not compare), and 2 fails the step.
+      - name: Report tool surface changes
+        if: matrix.resolution == 'locked' && github.event_name == 'pull_request'
+        env:
+          BASE_REF: ${{ github.base_ref }}
+          SNAPSHOT: tests/snapshots/surface.json
+        run: |
+          echo "### Tool surface changes against $BASE_REF (HEAD^1)" >>"$GITHUB_STEP_SUMMARY"
+          in_base=$(git ls-tree --name-only HEAD^1 -- "$SNAPSHOT")
+          if [[ -z $in_base ]]; then
+            echo "No base snapshot: $BASE_REF (HEAD^1) has no $SNAPSHOT to compare with." |
+              tee -a "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+          git show "HEAD^1:$SNAPSHOT" >"$RUNNER_TEMP/base-surface.json"
+          status=0
+          uv run --no-project --python 3.11 python .github/scripts/surface_diff.py \
+            "$RUNNER_TEMP/base-surface.json" "$SNAPSHOT" >"$RUNNER_TEMP/surface-diff.txt" ||
+            status=$?
+          cat "$RUNNER_TEMP/surface-diff.txt"
+          {
+            echo '```'
+            cat "$RUNNER_TEMP/surface-diff.txt"
+            echo '```'
+          } >>"$GITHUB_STEP_SUMMARY"
+          case $status in
+            0) ;;
+            1) echo "::warning title=Breaking surface changes::See the job summary." ;;
+            *)
+              echo "::error title=Surface diff::Could not compare the snapshots."
+              exit "$status"
+              ;;
+          esac
 
   # Builds the wheel and sdist as a release does, checks what they hold with the
   # script the release workflow runs on what it publishes, and runs the console
@@ -541,6 +584,53 @@ jobs:
           fail-on-severity: high
           comment-summary-in-pr: never
 
+  # Mutation tests on the lines of the package a pull request adds or changes
+  # (.github/scripts/mutation_gate.py, with mutmut from uv.lock): it fails when the
+  # tests catch fewer than 80% of the mutants. HEAD is the merge commit, so HEAD^1
+  # is the base branch. Bounded at 4 test processes at a time (the runner's CPUs),
+  # 3072 MiB of address space each, which the gate checks the kernel enforces
+  # before it starts, and 10 minutes for the run. It runs on pull requests only, as
+  # every change reaches main through one; elsewhere the job is skipped, which CI
+  # accepts with a notice. The report, surviving mutants included, is in the job
+  # summary.
+  mutation:
+    name: mutation
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    permissions:
+      contents: read
+    concurrency:
+      group: ${{ github.workflow }}-${{ github.ref }}-mutation
+      cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          fetch-depth: 2
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7  # v10.2.0
+        with:
+          version-file: uv.lock
+          python-version: "3.13"
+          enable-cache: false
+      - name: Install from uv.lock
+        run: uv sync --locked
+      # Exits 0 when the tests catch at least the threshold, or no package line
+      # changed; 1 when they catch fewer; and 2 when the gate did not run.
+      - name: Run the mutation tests on the changed lines
+        run: |
+          status=0
+          uv run --locked python .github/scripts/mutation_gate.py --base HEAD^1 \
+            --threshold 80 --workers 4 --memory-mib 3072 --max-minutes 10 || status=$?
+          case $status in
+            0) ;;
+            1) echo "::error title=Mutation tests::The tests catch too few mutants of the" \
+              "changed lines; see the job summary." ;;
+            *) echo "::error title=Mutation tests::The mutation tests did not run;" \
+              "see the log." ;;
+          esac
+          exit "$status"
+
   # actionlint and zizmor on the workflows, apart from the prek job, whose
   # zizmor hook runs offline. Here zizmor also runs its online audits, such as
   # known-vulnerable or impostor action commits, with the job's read-only token.
@@ -650,8 +740,9 @@ jobs:
   # The one check to require. It runs whatever happened to the jobs it needs,
   # since GitHub counts a skipped required check as passing, and fails unless
   # each of them succeeded: a failed, cancelled or skipped job fails it, with two
-  # exceptions. dependency-review runs on pull requests only, so on any other
-  # event it is skipped and that passes. A job in ADVISORY_JOBS (space
+  # exceptions. The jobs in PULL_REQUEST_JOBS (dependency-review and mutation) run
+  # on pull requests only, so on any other event each is skipped, and that passes
+  # with a notice. A job in ADVISORY_JOBS (space
   # separated) may fail without failing CI; its result is printed as a warning.
   # Exits 1 when a job did not succeed, and 2 when the results of other than
   # EXPECTED_JOBS jobs arrive. The prek job's needs check fails when a job is
@@ -666,6 +757,7 @@ jobs:
       - dependency-review
       - docs
       - gitleaks
+      - mutation
       - package
       - prek
       - tests
@@ -684,8 +776,9 @@ jobs:
         env:
           NEEDS: ${{ toJSON(needs) }}
           EVENT: ${{ github.event_name }}
-          EXPECTED_JOBS: 9
+          EXPECTED_JOBS: 10
           ADVISORY_JOBS: ""
+          PULL_REQUEST_JOBS: dependency-review mutation
         run: |
           if ! results=$(jq -r 'to_entries[] | "\(.key) \(.value.result)"' <<<"$NEEDS"); then
             echo "::error title=CI::Could not read the job results."
@@ -699,7 +792,13 @@ jobs:
           fi
           failed=$(grep -v ' success$' <<<"$results" || true)
           if [[ $EVENT != pull_request ]]; then
-            failed=$(grep -vx 'dependency-review skipped' <<<"$failed" || true)
+            for job in $PULL_REQUEST_JOBS; do
+              if grep -qx "$job skipped" <<<"$failed"; then
+                echo "::notice title=CI::$job runs on pull requests only;" \
+                  "skipped on this $EVENT run."
+              fi
+              failed=$(grep -vx "$job skipped" <<<"$failed" || true)
+            done
           fi
           for job in $ADVISORY_JOBS; do
             advisory=$(awk -v job="$job" '$1 == job' <<<"$failed")

@@ -31,6 +31,12 @@ job, and how to take a dependency release younger than the 7-day cooldown. In sh
 - **Logging only through `permit_mcp._log.get_logger`.** It redacts the API key and Elements
   tokens. ruff bans `logging.getLogger` elsewhere. Register any new secret with `redact()` or
   `redact_recent()`.
+- **Surface snapshot.** `tests/snapshots/surface.json` pins every tool's description, schemas
+  and annotations, and the public API's signatures. After an intended change, run
+  `UPDATE_SNAPSHOT=1 uv run pytest tests/test_surface.py` and commit the result. On a pull
+  request CI labels each change BREAKING or non-breaking against the base branch.
+- **Mutation gate.** On a pull request, mutmut mutates the changed lines of `src/permit_mcp`,
+  and CI fails when the tests catch fewer than 80% of the mutants (see CONTRIBUTING.md).
 - **Wire cases.** Every tool has a case in `CASES` in `tests/support.py` that pins the exact
   requests it sends and what it returns; `test_every_tool_has_a_case` in
   `tests/test_tools_wire.py` fails when a tool has none. A new tool also needs a row in the

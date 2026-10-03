@@ -44,6 +44,7 @@ permit-mcp = "permit_mcp.server:main"
 [dependency-groups]
 # Exact pins: uv.lock is the single source of these tool versions.
 dev = [
+    "mutmut==3.8.0",
     "mypy==2.3.1",
     "prek==0.5.3",
     "pytest==9.1.1",
@@ -132,3 +133,12 @@ enable_error_code = [
 required-version = ">=0.12.19"
 # Publish-age cooldown, matching Dependabot's 7 days.
 exclude-newer = "7 days"
+
+# Read by .github/scripts/mutation_gate.py, which runs mutmut on the lines a change edits.
+# mutmut runs the tests in a copy of the repository (mutants/); tests/test_docs.py reads
+# the README and the upgrade guide, so they are copied too. The migration skill's tests
+# test skills/, which is not mutated, so they do not run.
+[tool.mutmut]
+source_paths = ["src/permit_mcp"]
+pytest_add_cli_args_test_selection = ["tests", "--ignore=tests/test_migration_skill.py"]
+also_copy = ["README.md", "docs"]

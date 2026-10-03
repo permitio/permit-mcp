@@ -8,13 +8,13 @@ about that user, and list_resource_instances lists with the server's credentials
 
 import json
 from collections.abc import Awaitable, Callable, Collection
-from typing import Annotated, Any, Literal, TypedDict, TypeVar
+from typing import Annotated, Any, Literal, TypedDict, TypeVar, cast
 from uuid import UUID
 
 from mcp.server.mcpserver import Context, MCPServer
 from mcp.server.mcpserver.exceptions import ToolError
 from mcp.types import CallToolResult, TextContent, ToolAnnotations
-from pydantic import Field
+from pydantic import ConfigDict, Field, with_config
 
 from permit_mcp._log import get_logger
 from permit_mcp.config import Settings
@@ -89,6 +89,86 @@ _WRITE = ToolAnnotations(
 
 class _JsonResult(TypedDict):
     result: Any
+
+
+AccessRequest = Annotated[Any, Field(description="The access request, as Permit returns it.")]
+OperationApproval = Annotated[
+    Any, Field(description="The operation approval request, as Permit returns it.")
+]
+
+
+class PermissionResult(TypedDict):
+    """What check_permission returns."""
+
+    allowed: Annotated[bool, Field(description="Whether the acting user may do it.")]
+
+
+class AccessRequestCreated(TypedDict):
+    """What create_access_request returns."""
+
+    status: Literal["created"]
+    access_request: AccessRequest
+
+
+class AccessRequestApproved(TypedDict):
+    """What approve_access_request returns."""
+
+    status: Literal["approved"]
+    access_request: AccessRequest
+
+
+class AccessRequestDenied(TypedDict):
+    """What deny_access_request returns."""
+
+    status: Literal["denied"]
+    access_request: AccessRequest
+
+
+class AccessRequestCanceled(TypedDict):
+    """What cancel_access_request returns."""
+
+    status: Literal["canceled"]
+    access_request: AccessRequest
+
+
+class OperationApprovalCreated(TypedDict):
+    """What create_operation_approval returns."""
+
+    status: Literal["created"]
+    operation_approval: OperationApproval
+
+
+class OperationApprovalApproved(TypedDict):
+    """What approve_operation_approval returns."""
+
+    status: Literal["approved"]
+    operation_approval: OperationApproval
+
+
+class OperationApprovalDenied(TypedDict):
+    """What deny_operation_approval returns."""
+
+    status: Literal["denied"]
+    operation_approval: OperationApproval
+
+
+class OperationApprovalCanceled(TypedDict):
+    """What cancel_operation_approval returns."""
+
+    status: Literal["canceled"]
+    operation_approval: OperationApproval
+
+
+# Permit's page object, with each item's requesting_user added; its other keys, such as
+# total_count and page_count, pass through.
+@with_config(ConfigDict(extra="allow"))
+class RequestPage(TypedDict):
+    """What list_access_requests and list_operation_approvals return."""
+
+    data: Annotated[
+        list[Any],
+        Field(description="The requests, each with requesting_user (key, email and name)."),
+    ]
 
 
 class PermitTools:
@@ -302,7 +382,7 @@ class PermitTools:
                 ),
             ),
         ] = None,
-    ) -> dict[str, bool]:
+    ) -> PermissionResult:
         user = await self._acting_user(ctx)
         allowed = await _translate(
             self._api.check_permission(user, action=action, resource_instance=resource_instance)
@@ -316,7 +396,7 @@ class PermitTools:
         role: Annotated[str, Field(min_length=1, description="Key of the role to request.")],
         reason: Reason,
         resource_instance: ResourceInstance = None,
-    ) -> dict[str, Any]:
+    ) -> AccessRequestCreated:
         user = await self._acting_user(ctx)
         created = await _translate(
             self._api.create_access_request(
@@ -337,7 +417,7 @@ class PermitTools:
         resource_instance: ResourceInstanceFilter = None,
         page: Page = 1,
         per_page: PerPage = 30,
-    ) -> dict[str, Any]:
+    ) -> RequestPage:
         user = await self._acting_user(ctx)
         listed = await _translate(
             self._api.list_access_requests(
@@ -357,7 +437,7 @@ class PermitTools:
         *,
         access_request_id: AccessRequestId,
         reviewer_comment: ReviewerComment = None,
-    ) -> dict[str, Any]:
+    ) -> AccessRequestApproved:
         user = await self._acting_user(ctx)
         decided = await _translate(
             self._api.decide_access_request(
@@ -375,7 +455,7 @@ class PermitTools:
         *,
         access_request_id: AccessRequestId,
         reviewer_comment: ReviewerComment = None,
-    ) -> dict[str, Any]:
+    ) -> AccessRequestDenied:
         user = await self._acting_user(ctx)
         decided = await _translate(
             self._api.decide_access_request(
@@ -389,7 +469,7 @@ class PermitTools:
 
     async def _cancel_access_request(
         self, ctx: Context[Any, Any], *, access_request_id: AccessRequestId
-    ) -> dict[str, Any]:
+    ) -> AccessRequestCanceled:
         user = await self._acting_user(ctx)
         canceled = await _translate(self._api.cancel_access_request(user, access_request_id))
         return {"status": "canceled", "access_request": canceled}
@@ -400,7 +480,7 @@ class PermitTools:
         *,
         reason: Reason,
         resource_instance: ResourceInstance = None,
-    ) -> dict[str, Any]:
+    ) -> OperationApprovalCreated:
         user = await self._acting_user(ctx)
         created = await _translate(
             self._api.create_operation_approval(
@@ -417,7 +497,7 @@ class PermitTools:
         resource_instance: ResourceInstanceFilter = None,
         page: Page = 1,
         per_page: PerPage = 30,
-    ) -> dict[str, Any]:
+    ) -> RequestPage:
         user = await self._acting_user(ctx)
         listed = await _translate(
             self._api.list_operation_approvals(
@@ -436,7 +516,7 @@ class PermitTools:
         *,
         operation_approval_id: OperationApprovalId,
         reviewer_comment: ReviewerComment = None,
-    ) -> dict[str, Any]:
+    ) -> OperationApprovalApproved:
         user = await self._acting_user(ctx)
         decided = await _translate(
             self._api.decide_operation_approval(
@@ -454,7 +534,7 @@ class PermitTools:
         *,
         operation_approval_id: OperationApprovalId,
         reviewer_comment: ReviewerComment = None,
-    ) -> dict[str, Any]:
+    ) -> OperationApprovalDenied:
         user = await self._acting_user(ctx)
         decided = await _translate(
             self._api.decide_operation_approval(
@@ -468,7 +548,7 @@ class PermitTools:
 
     async def _cancel_operation_approval(
         self, ctx: Context[Any, Any], *, operation_approval_id: OperationApprovalId
-    ) -> dict[str, Any]:
+    ) -> OperationApprovalCanceled:
         user = await self._acting_user(ctx)
         canceled = await _translate(
             self._api.cancel_operation_approval(user, operation_approval_id)
@@ -498,7 +578,7 @@ class PermitTools:
             raise ToolError(msg)
         return user
 
-    async def _with_requesting_users(self, operation: str, listed: object) -> dict[str, Any]:
+    async def _with_requesting_users(self, operation: str, listed: object) -> RequestPage:
         """Add each item's requesting user to `listed` as `requesting_user`, and return it.
 
         `requesting_user` holds the user's key, email, first_name and last_name, or is None
@@ -531,7 +611,7 @@ class PermitTools:
                 if isinstance(found, dict)
                 else None
             )
-        return listed
+        return cast("RequestPage", listed)  # pragma: no mutate - cast() does nothing at run time
 
 
 async def _translate(call: Awaitable[_T]) -> _T:

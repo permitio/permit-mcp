@@ -1,0 +1,865 @@
+{
+  "public": {
+    "__all__": [
+      "ConfigError",
+      "IdentityError",
+      "IdentityResolver",
+      "PermitTools",
+      "Settings",
+      "TOOL_NAMES",
+      "__version__",
+      "access_token_subject",
+      "bound_user",
+      "create_server"
+    ],
+    "signatures": {
+      "PermitTools": {
+        "async": false,
+        "parameters": [
+          {
+            "annotation": "Settings",
+            "kind": "positional-or-keyword",
+            "name": "settings"
+          },
+          {
+            "annotation": "IdentityResolver",
+            "kind": "positional-or-keyword",
+            "name": "identity"
+          }
+        ]
+      },
+      "PermitTools.aclose": {
+        "async": true,
+        "parameters": [],
+        "return": "None"
+      },
+      "PermitTools.register": {
+        "async": false,
+        "parameters": [
+          {
+            "annotation": "MCPServer[Any]",
+            "kind": "positional-or-keyword",
+            "name": "server"
+          },
+          {
+            "annotation": "Collection[str]",
+            "default": "()",
+            "kind": "keyword-only",
+            "name": "exclude"
+          }
+        ],
+        "return": "list[str]"
+      },
+      "Settings": {
+        "async": false,
+        "parameters": [
+          {
+            "annotation": "str",
+            "kind": "keyword-only",
+            "name": "api_key"
+          },
+          {
+            "annotation": "str",
+            "kind": "keyword-only",
+            "name": "resource"
+          },
+          {
+            "annotation": "str",
+            "default": "'default'",
+            "kind": "keyword-only",
+            "name": "tenant"
+          },
+          {
+            "annotation": "str",
+            "default": "'https://api.permit.io'",
+            "kind": "keyword-only",
+            "name": "api_url"
+          },
+          {
+            "annotation": "str",
+            "default": "'https://cloudpdp.api.permit.io'",
+            "kind": "keyword-only",
+            "name": "pdp_url"
+          },
+          {
+            "annotation": "str | None",
+            "default": "None",
+            "kind": "keyword-only",
+            "name": "access_request_element"
+          },
+          {
+            "annotation": "str | None",
+            "default": "None",
+            "kind": "keyword-only",
+            "name": "operation_approval_element"
+          },
+          {
+            "annotation": "str | None",
+            "default": "None",
+            "kind": "keyword-only",
+            "name": "user"
+          }
+        ]
+      },
+      "Settings.from_env": {
+        "async": false,
+        "parameters": [
+          {
+            "annotation": "Mapping[str, str] | None",
+            "default": "None",
+            "kind": "positional-or-keyword",
+            "name": "environ"
+          },
+          {
+            "annotation": "str | None",
+            "kind": "var-keyword",
+            "name": "overrides"
+          }
+        ],
+        "return": "Self"
+      },
+      "access_token_subject": {
+        "async": false,
+        "parameters": [],
+        "return": "IdentityResolver"
+      },
+      "bound_user": {
+        "async": false,
+        "parameters": [
+          {
+            "annotation": "str",
+            "kind": "positional-or-keyword",
+            "name": "user_key"
+          }
+        ],
+        "return": "IdentityResolver"
+      },
+      "create_server": {
+        "async": false,
+        "parameters": [
+          {
+            "annotation": "Settings | None",
+            "default": "None",
+            "kind": "positional-or-keyword",
+            "name": "settings"
+          },
+          {
+            "annotation": "IdentityResolver | None",
+            "default": "None",
+            "kind": "keyword-only",
+            "name": "identity"
+          },
+          {
+            "annotation": "Collection[str]",
+            "default": "()",
+            "kind": "keyword-only",
+            "name": "exclude_tools"
+          }
+        ],
+        "return": "MCPServer[Any]"
+      }
+    }
+  },
+  "tools": {
+    "approve_access_request": {
+      "annotations": {
+        "destructiveHint": false,
+        "idempotentHint": false,
+        "openWorldHint": false,
+        "readOnlyHint": false
+      },
+      "description": "Approve an access request, which grants the requested role. Permit refuses when the acting user may not review access requests. Acts as the caller's Permit user.",
+      "input_schema": {
+        "properties": {
+          "access_request_id": {
+            "description": "ID (a UUID) of the access request, from list_access_requests.",
+            "format": "uuid",
+            "title": "Access Request Id",
+            "type": "string"
+          },
+          "reviewer_comment": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "Stored with the decision.",
+            "title": "Reviewer Comment"
+          }
+        },
+        "required": [
+          "access_request_id"
+        ],
+        "title": "_approve_access_requestArguments",
+        "type": "object"
+      },
+      "output_schema": {
+        "description": "What approve_access_request returns.",
+        "properties": {
+          "access_request": {
+            "description": "The access request, as Permit returns it.",
+            "title": "Access Request"
+          },
+          "status": {
+            "const": "approved",
+            "title": "Status",
+            "type": "string"
+          }
+        },
+        "required": [
+          "status",
+          "access_request"
+        ],
+        "title": "AccessRequestApproved",
+        "type": "object"
+      }
+    },
+    "approve_operation_approval": {
+      "annotations": {
+        "destructiveHint": false,
+        "idempotentHint": false,
+        "openWorldHint": false,
+        "readOnlyHint": false
+      },
+      "description": "Approve an operation approval request. Permit refuses when the acting user may not review operation approvals. Acts as the caller's Permit user.",
+      "input_schema": {
+        "properties": {
+          "operation_approval_id": {
+            "description": "ID (a UUID) of the operation approval, from list_operation_approvals.",
+            "format": "uuid",
+            "title": "Operation Approval Id",
+            "type": "string"
+          },
+          "reviewer_comment": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "Stored with the decision.",
+            "title": "Reviewer Comment"
+          }
+        },
+        "required": [
+          "operation_approval_id"
+        ],
+        "title": "_approve_operation_approvalArguments",
+        "type": "object"
+      },
+      "output_schema": {
+        "description": "What approve_operation_approval returns.",
+        "properties": {
+          "operation_approval": {
+            "description": "The operation approval request, as Permit returns it.",
+            "title": "Operation Approval"
+          },
+          "status": {
+            "const": "approved",
+            "title": "Status",
+            "type": "string"
+          }
+        },
+        "required": [
+          "status",
+          "operation_approval"
+        ],
+        "title": "OperationApprovalApproved",
+        "type": "object"
+      }
+    },
+    "cancel_access_request": {
+      "annotations": {
+        "destructiveHint": false,
+        "idempotentHint": false,
+        "openWorldHint": false,
+        "readOnlyHint": false
+      },
+      "description": "Cancel an access request. Withdraws a pending request the acting user filed; Permit refuses otherwise. Acts as the caller's Permit user.",
+      "input_schema": {
+        "properties": {
+          "access_request_id": {
+            "description": "ID (a UUID) of the access request, from list_access_requests.",
+            "format": "uuid",
+            "title": "Access Request Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "access_request_id"
+        ],
+        "title": "_cancel_access_requestArguments",
+        "type": "object"
+      },
+      "output_schema": {
+        "description": "What cancel_access_request returns.",
+        "properties": {
+          "access_request": {
+            "description": "The access request, as Permit returns it.",
+            "title": "Access Request"
+          },
+          "status": {
+            "const": "canceled",
+            "title": "Status",
+            "type": "string"
+          }
+        },
+        "required": [
+          "status",
+          "access_request"
+        ],
+        "title": "AccessRequestCanceled",
+        "type": "object"
+      }
+    },
+    "cancel_operation_approval": {
+      "annotations": {
+        "destructiveHint": false,
+        "idempotentHint": false,
+        "openWorldHint": false,
+        "readOnlyHint": false
+      },
+      "description": "Cancel an operation approval request. Withdraws a pending request the acting user filed; Permit refuses otherwise. Acts as the caller's Permit user.",
+      "input_schema": {
+        "properties": {
+          "operation_approval_id": {
+            "description": "ID (a UUID) of the operation approval, from list_operation_approvals.",
+            "format": "uuid",
+            "title": "Operation Approval Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "operation_approval_id"
+        ],
+        "title": "_cancel_operation_approvalArguments",
+        "type": "object"
+      },
+      "output_schema": {
+        "description": "What cancel_operation_approval returns.",
+        "properties": {
+          "operation_approval": {
+            "description": "The operation approval request, as Permit returns it.",
+            "title": "Operation Approval"
+          },
+          "status": {
+            "const": "canceled",
+            "title": "Status",
+            "type": "string"
+          }
+        },
+        "required": [
+          "status",
+          "operation_approval"
+        ],
+        "title": "OperationApprovalCanceled",
+        "type": "object"
+      }
+    },
+    "check_permission": {
+      "annotations": {
+        "openWorldHint": false,
+        "readOnlyHint": true
+      },
+      "description": "Ask Permit whether the acting user may perform an action on the 'documents' resource type in tenant 'acme', or on one instance of it (the instance key, not the ID). Returns allowed: true or false. On the cloud PDP, RBAC and ReBAC policies are evaluated; a permission that only an ABAC policy grants comes back false. Asks as the caller's Permit user.",
+      "input_schema": {
+        "properties": {
+          "action": {
+            "description": "Key of the action, such as read or edit.",
+            "minLength": 1,
+            "title": "Action",
+            "type": "string"
+          },
+          "resource_instance": {
+            "anyOf": [
+              {
+                "minLength": 1,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "Instance key (not the ID). Optional; without it the check is on the resource type.",
+            "title": "Resource Instance"
+          }
+        },
+        "required": [
+          "action"
+        ],
+        "title": "_check_permissionArguments",
+        "type": "object"
+      },
+      "output_schema": {
+        "description": "What check_permission returns.",
+        "properties": {
+          "allowed": {
+            "description": "Whether the acting user may do it.",
+            "title": "Allowed",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "allowed"
+        ],
+        "title": "PermissionResult",
+        "type": "object"
+      }
+    },
+    "create_access_request": {
+      "annotations": {
+        "destructiveHint": false,
+        "idempotentHint": false,
+        "openWorldHint": false,
+        "readOnlyHint": false
+      },
+      "description": "Request a role on the 'documents' resource type in tenant 'acme', or on one instance of it. The request is filed for the acting user and waits for a reviewer to approve or deny it. Acts as the caller's Permit user.",
+      "input_schema": {
+        "properties": {
+          "reason": {
+            "description": "Why it is needed; reviewers see it.",
+            "minLength": 1,
+            "title": "Reason",
+            "type": "string"
+          },
+          "resource_instance": {
+            "anyOf": [
+              {
+                "minLength": 1,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "Key or ID of one instance of the resource type. Optional. If Permit answers that an instance is required, get one from list_resource_instances.",
+            "title": "Resource Instance"
+          },
+          "role": {
+            "description": "Key of the role to request.",
+            "minLength": 1,
+            "title": "Role",
+            "type": "string"
+          }
+        },
+        "required": [
+          "role",
+          "reason"
+        ],
+        "title": "_create_access_requestArguments",
+        "type": "object"
+      },
+      "output_schema": {
+        "description": "What create_access_request returns.",
+        "properties": {
+          "access_request": {
+            "description": "The access request, as Permit returns it.",
+            "title": "Access Request"
+          },
+          "status": {
+            "const": "created",
+            "title": "Status",
+            "type": "string"
+          }
+        },
+        "required": [
+          "status",
+          "access_request"
+        ],
+        "title": "AccessRequestCreated",
+        "type": "object"
+      }
+    },
+    "create_operation_approval": {
+      "annotations": {
+        "destructiveHint": false,
+        "idempotentHint": false,
+        "openWorldHint": false,
+        "readOnlyHint": false
+      },
+      "description": "Request one-time approval for an operation on the 'documents' resource type in tenant 'acme', or on one instance of it. The request is filed for the acting user and waits for a reviewer to approve or deny it. Acts as the caller's Permit user.",
+      "input_schema": {
+        "properties": {
+          "reason": {
+            "description": "Why it is needed; reviewers see it.",
+            "minLength": 1,
+            "title": "Reason",
+            "type": "string"
+          },
+          "resource_instance": {
+            "anyOf": [
+              {
+                "minLength": 1,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "Key or ID of one instance of the resource type. Optional. If Permit answers that an instance is required, get one from list_resource_instances.",
+            "title": "Resource Instance"
+          }
+        },
+        "required": [
+          "reason"
+        ],
+        "title": "_create_operation_approvalArguments",
+        "type": "object"
+      },
+      "output_schema": {
+        "description": "What create_operation_approval returns.",
+        "properties": {
+          "operation_approval": {
+            "description": "The operation approval request, as Permit returns it.",
+            "title": "Operation Approval"
+          },
+          "status": {
+            "const": "created",
+            "title": "Status",
+            "type": "string"
+          }
+        },
+        "required": [
+          "status",
+          "operation_approval"
+        ],
+        "title": "OperationApprovalCreated",
+        "type": "object"
+      }
+    },
+    "deny_access_request": {
+      "annotations": {
+        "destructiveHint": false,
+        "idempotentHint": false,
+        "openWorldHint": false,
+        "readOnlyHint": false
+      },
+      "description": "Deny an access request. Permit refuses when the acting user may not review access requests. Acts as the caller's Permit user.",
+      "input_schema": {
+        "properties": {
+          "access_request_id": {
+            "description": "ID (a UUID) of the access request, from list_access_requests.",
+            "format": "uuid",
+            "title": "Access Request Id",
+            "type": "string"
+          },
+          "reviewer_comment": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "Stored with the decision.",
+            "title": "Reviewer Comment"
+          }
+        },
+        "required": [
+          "access_request_id"
+        ],
+        "title": "_deny_access_requestArguments",
+        "type": "object"
+      },
+      "output_schema": {
+        "description": "What deny_access_request returns.",
+        "properties": {
+          "access_request": {
+            "description": "The access request, as Permit returns it.",
+            "title": "Access Request"
+          },
+          "status": {
+            "const": "denied",
+            "title": "Status",
+            "type": "string"
+          }
+        },
+        "required": [
+          "status",
+          "access_request"
+        ],
+        "title": "AccessRequestDenied",
+        "type": "object"
+      }
+    },
+    "deny_operation_approval": {
+      "annotations": {
+        "destructiveHint": false,
+        "idempotentHint": false,
+        "openWorldHint": false,
+        "readOnlyHint": false
+      },
+      "description": "Deny an operation approval request. Permit refuses when the acting user may not review operation approvals. Acts as the caller's Permit user.",
+      "input_schema": {
+        "properties": {
+          "operation_approval_id": {
+            "description": "ID (a UUID) of the operation approval, from list_operation_approvals.",
+            "format": "uuid",
+            "title": "Operation Approval Id",
+            "type": "string"
+          },
+          "reviewer_comment": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "Stored with the decision.",
+            "title": "Reviewer Comment"
+          }
+        },
+        "required": [
+          "operation_approval_id"
+        ],
+        "title": "_deny_operation_approvalArguments",
+        "type": "object"
+      },
+      "output_schema": {
+        "description": "What deny_operation_approval returns.",
+        "properties": {
+          "operation_approval": {
+            "description": "The operation approval request, as Permit returns it.",
+            "title": "Operation Approval"
+          },
+          "status": {
+            "const": "denied",
+            "title": "Status",
+            "type": "string"
+          }
+        },
+        "required": [
+          "status",
+          "operation_approval"
+        ],
+        "title": "OperationApprovalDenied",
+        "type": "object"
+      }
+    },
+    "list_access_requests": {
+      "annotations": {
+        "openWorldHint": false,
+        "readOnlyHint": true
+      },
+      "description": "List the access requests on the 'documents' resource type in tenant 'acme' that Permit shows the acting user, with the requesting user's key, email and name added to each as requesting_user. Acts as the caller's Permit user.",
+      "input_schema": {
+        "properties": {
+          "page": {
+            "default": 1,
+            "description": "Page number of the results, starting at 1.",
+            "minimum": 1,
+            "title": "Page",
+            "type": "integer"
+          },
+          "per_page": {
+            "default": 30,
+            "description": "Results per page, from 1 to 100.",
+            "maximum": 100,
+            "minimum": 1,
+            "title": "Per Page",
+            "type": "integer"
+          },
+          "resource_instance": {
+            "anyOf": [
+              {
+                "minLength": 1,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "Only requests on this resource instance (key or ID).",
+            "title": "Resource Instance"
+          },
+          "role": {
+            "anyOf": [
+              {
+                "minLength": 1,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "Only requests for this role key.",
+            "title": "Role"
+          },
+          "status": {
+            "anyOf": [
+              {
+                "enum": [
+                  "pending",
+                  "approved",
+                  "denied",
+                  "canceled"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "Only requests in this status.",
+            "title": "Status"
+          }
+        },
+        "title": "_list_access_requestsArguments",
+        "type": "object"
+      },
+      "output_schema": {
+        "additionalProperties": true,
+        "description": "What list_access_requests and list_operation_approvals return.",
+        "properties": {
+          "data": {
+            "description": "The requests, each with requesting_user (key, email and name).",
+            "items": {},
+            "title": "Data",
+            "type": "array"
+          }
+        },
+        "required": [
+          "data"
+        ],
+        "title": "RequestPage",
+        "type": "object"
+      }
+    },
+    "list_operation_approvals": {
+      "annotations": {
+        "openWorldHint": false,
+        "readOnlyHint": true
+      },
+      "description": "List the operation approval requests on the 'documents' resource type in tenant 'acme' that Permit shows the acting user, with the requesting user's key, email and name added to each as requesting_user. Acts as the caller's Permit user.",
+      "input_schema": {
+        "properties": {
+          "page": {
+            "default": 1,
+            "description": "Page number of the results, starting at 1.",
+            "minimum": 1,
+            "title": "Page",
+            "type": "integer"
+          },
+          "per_page": {
+            "default": 30,
+            "description": "Results per page, from 1 to 100.",
+            "maximum": 100,
+            "minimum": 1,
+            "title": "Per Page",
+            "type": "integer"
+          },
+          "resource_instance": {
+            "anyOf": [
+              {
+                "minLength": 1,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "Only requests on this resource instance (key or ID).",
+            "title": "Resource Instance"
+          },
+          "status": {
+            "anyOf": [
+              {
+                "enum": [
+                  "pending",
+                  "approved",
+                  "denied",
+                  "canceled"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "Only requests in this status.",
+            "title": "Status"
+          }
+        },
+        "title": "_list_operation_approvalsArguments",
+        "type": "object"
+      },
+      "output_schema": {
+        "additionalProperties": true,
+        "description": "What list_access_requests and list_operation_approvals return.",
+        "properties": {
+          "data": {
+            "description": "The requests, each with requesting_user (key, email and name).",
+            "items": {},
+            "title": "Data",
+            "type": "array"
+          }
+        },
+        "required": [
+          "data"
+        ],
+        "title": "RequestPage",
+        "type": "object"
+      }
+    },
+    "list_resource_instances": {
+      "annotations": {
+        "openWorldHint": false,
+        "readOnlyHint": true
+      },
+      "description": "List the instances of the 'documents' resource type in tenant 'acme', with the ID and key of each. Use an instance key as resource_instance in the other tools. The listing uses the server's credentials and is not filtered by the caller's permissions; the call still requires an identified caller.",
+      "input_schema": {
+        "properties": {
+          "page": {
+            "default": 1,
+            "description": "Page number of the results, starting at 1.",
+            "minimum": 1,
+            "title": "Page",
+            "type": "integer"
+          },
+          "per_page": {
+            "default": 30,
+            "description": "Results per page, from 1 to 100.",
+            "maximum": 100,
+            "minimum": 1,
+            "title": "Per Page",
+            "type": "integer"
+          }
+        },
+        "title": "_list_resource_instancesArguments",
+        "type": "object"
+      },
+      "output_schema": {
+        "properties": {
+          "result": {
+            "title": "Result"
+          }
+        },
+        "required": [
+          "result"
+        ],
+        "title": "_JsonResult",
+        "type": "object"
+      }
+    }
+  }
+}

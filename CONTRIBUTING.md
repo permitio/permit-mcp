@@ -39,6 +39,50 @@ uv run --locked --only-dev pytest -c .github/scripts/pytest.ini -q .github/scrip
   type-checks every Python block in the README and the upgrade guide with mypy. When you add a
   tool, change a tool's first sentence, or add or change a setting, update the README. A block
   that shows 0.1 code is marked with `<!-- docs-check: skip, 0.1 code -->` on the line before it.
+- `tests/test_server.py` fails when a tool or one of its arguments has no description, or a
+  public function, class or method has no docstring.
+- `tests/snapshots/surface.json` holds what clients and hosts build on: every tool as an MCP
+  client lists it (description, input and output schemas, annotations), `permit_mcp.__all__`,
+  and the signatures of `create_server`, `bound_user`, `access_token_subject`, `PermitTools`
+  and `Settings`. `tests/test_surface.py` fails with a diff when the code differs from it.
+  After an intended change, rewrite it, and commit it with the change:
+
+  ```shell
+  UPDATE_SNAPSHOT=1 uv run pytest tests/test_surface.py
+  ```
+
+  The `highest` test legs install the newest mcp and pydantic the ranges allow. When
+  `test_surface.py` fails on those legs only, a new mcp or pydantic release changed the schema
+  text clients see. Review the diff, then update the snapshot as above.
+
+  On a pull request, CI compares it with the copy in the base the pull request was merged into
+  and lists each change in the job summary, labelled BREAKING or non-breaking by
+  `.github/scripts/surface_diff.py`, whose docstring has the rules. Breaking changes are a
+  warning for now. To compare two snapshots yourself:
+
+  ```shell
+  git show origin/main:tests/snapshots/surface.json >/tmp/base-surface.json
+  python3 .github/scripts/surface_diff.py /tmp/base-surface.json tests/snapshots/surface.json
+  ```
+
+### Mutation tests
+
+On a pull request, the `mutation` job runs [mutmut](https://github.com/boxed/mutmut), pinned in
+the dev group, on the lines of `src/permit_mcp` that the pull request adds or changes, and fails
+when the tests catch fewer than 80% of the mutants; the job, and so `CI`, stays red until they
+do. A small diff is strict: with three mutants, one survivor is 67% and fails. The job summary
+lists the mutants that survived, as diffs. Add a test that fails on each one. A mutant that
+behaves exactly as the original code does (an equivalent mutant) cannot be caught: mark its
+line with mutmut's `# pragma: no mutate` comment, and say in the pull request why. To run the
+gate locally against `main`, or on the whole package:
+
+```shell
+uv run --locked python .github/scripts/mutation_gate.py --base origin/main --threshold 80 --workers 4
+uv run --locked python .github/scripts/mutation_gate.py --all --threshold 80 --workers 4
+```
+
+mutmut works in `mutants/`, which the gate deletes first. CI also limits each test process to
+3072 MiB of address space with `--memory-mib`, which only Linux enforces; locally, leave it out.
 
 ## The API reference site
 
@@ -85,18 +129,19 @@ release, a repository owner must:
 
 ## What CI runs
 
-The `CI` check passes only when every job below succeeded. `dependency-review` runs on pull
-requests only.
+The `CI` check passes only when every job below succeeded. `dependency-review` and `mutation`
+run on pull requests only; on other events CI accepts them as skipped, with a notice.
 
 | Job | What it runs |
 | --- | --- |
 | `prek` | `uv run --locked --only-dev prek run --all-files`, with a count of the hooks that passed, and a check that `CI` needs every job |
-| `tests` | `python -m pytest -q -W error` on Python 3.11 to 3.14, installed from the ranges in `pyproject.toml` at their newest (`highest`) and lowest (`lowest-direct`) versions, and on 3.13 from `uv.lock` (`uv sync --locked`); then a check that no test skipped. The `uv.lock` leg also runs the API coverage report (below) |
+| `tests` | `python -m pytest -q -W error` on Python 3.11 to 3.14, installed from the ranges in `pyproject.toml` at their newest (`highest`) and lowest (`lowest-direct`) versions, and on 3.13 from `uv.lock` (`uv sync --locked`); then a check that no test skipped. The `uv.lock` leg also runs the API coverage report (below), and on a pull request lists the surface snapshot's changes against the base branch |
 | `package` | `uv build --no-sources`, a check of the wheel and sdist contents and of the wheel's metadata against `pyproject.toml` (`check_dist.py`, as the release runs it), and the `permit-mcp` command from the installed wheel, which must exit 2 without configuration |
 | `docs` | `.github/scripts/build-docs.sh`: builds the API reference site, fails on any warning, and checks what was built with `check_site.py` (see [the API reference site](#the-api-reference-site)) |
 | `audit` | Trivy on the runtime dependency trees (newest and lowest), the dev tree and the docs tree (the `docs` group); fails on a fixable HIGH or CRITICAL advisory. In the run `release.yml` calls, the dev and docs trees are reported but do not fail it (the `gate-dev-tree` input) |
 | `audit-scripts` | `uv run --locked --only-dev pytest -c .github/scripts/pytest.ini -q .github/scripts` |
 | `dependency-review` | GitHub's dependency review; fails a pull request that adds a dependency or action with a HIGH or CRITICAL advisory |
+| `mutation` | `.github/scripts/mutation_gate.py` on the package lines a pull request changes; fails when the tests catch fewer than 80% of the mutants |
 | `workflow-hardening` | actionlint, and zizmor with its online audits |
 | `gitleaks` | gitleaks on the whole history |
 

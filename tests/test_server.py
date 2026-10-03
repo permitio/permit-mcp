@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import inspect
 from importlib.metadata import version
 from typing import TYPE_CHECKING, Any
 
@@ -242,14 +243,91 @@ async def test_create_server_excludes_tools(settings: Settings) -> None:
     assert set(await tools_of(server)) == set(TOOL_NAMES) - {"list_resource_instances"}
 
 
+def undescribed(tools: list[Tool]) -> list[str]:
+    """Name each tool, and each tool argument, whose description is missing or blank."""
+    missing: list[str] = []
+    for tool in tools:
+        if not (tool.description or "").strip():
+            missing.append(tool.name)
+        for prop, schema in tool.input_schema.get("properties", {}).items():
+            if not str(schema.get("description") or "").strip():
+                missing.append(f"{tool.name}.{prop}")
+    return missing
+
+
+def undocumented(names: list[str]) -> list[str]:
+    """Name each public function, class and public method of `names` without a docstring."""
+    missing: list[str] = []
+    for name in names:
+        obj = getattr(permit_mcp, name)
+        if not (inspect.isfunction(obj) or inspect.isclass(obj)):
+            continue
+        if not (obj.__doc__ or "").strip():
+            missing.append(name)
+        if not inspect.isclass(obj):
+            continue
+        for member_name, member in vars(obj).items():
+            function = getattr(member, "__func__", member)
+            # mutmut adds a class's mutants to it under non-ASCII names (xǁClassǁname__mutmut_1).
+            if member_name.startswith("_") or not member_name.isascii():
+                continue
+            if not inspect.isfunction(function):
+                continue
+            if not (function.__doc__ or "").strip():
+                missing.append(f"{name}.{member_name}")
+    return missing
+
+
 async def test_every_tool_and_argument_is_described(settings: Settings) -> None:
     async with connected(settings) as client:
         tools = (await client.list_tools()).tools
 
-    for tool in tools:
-        assert tool.description, tool.name
-        for prop, schema in tool.input_schema.get("properties", {}).items():
-            assert schema.get("description"), (tool.name, prop)
+    assert len(tools) == len(TOOL_NAMES)
+    assert undescribed(tools) == []
+
+
+async def test_an_undescribed_tool_or_argument_is_found() -> None:
+    host: MCPServer[Any] = MCPServer(name="host")
+
+    def bare(count: int) -> int:
+        return count
+
+    host.add_tool(bare, name="bare", description=" ")
+
+    assert undescribed(list((await tools_of(host)).values())) == ["bare", "bare.count"]
+
+
+def test_every_public_function_class_and_method_has_a_docstring() -> None:
+    assert undocumented(permit_mcp.__all__) == []
+
+
+def test_an_undocumented_public_function_or_method_is_found(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class Planted:
+        """Documented."""
+
+        def method(self) -> None:
+            pass
+
+        @classmethod
+        def build(cls) -> None:
+            pass
+
+        def _private(self) -> None:
+            pass
+
+    def planted_function() -> None:
+        pass
+
+    monkeypatch.setattr(permit_mcp, "Planted", Planted, raising=False)
+    monkeypatch.setattr(permit_mcp, "planted_function", planted_function, raising=False)
+
+    assert undocumented(["Planted", "planted_function", "TOOL_NAMES"]) == [
+        "Planted.method",
+        "Planted.build",
+        "planted_function",
+    ]
 
 
 async def test_list_tools_are_read_only(settings: Settings) -> None:

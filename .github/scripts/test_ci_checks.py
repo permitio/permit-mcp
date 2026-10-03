@@ -40,6 +40,9 @@ VERSIONS_STEP = ("tests", "Check the installed runtime versions")
 INSTALL_STEP = ("tests", "Install from the ranges in pyproject.toml")
 AUDIT_GATE_STEP = ("audit", "Gate on fixable HIGH and CRITICAL advisories")
 GITLEAKS_STEP = ("gitleaks", "Scan the history")
+SURFACE_STEP = ("tests", "Report tool surface changes")
+MUTATION_STEP = ("mutation", "Run the mutation tests on the changed lines")
+PULL_REQUEST_IF = "github.event_name == 'pull_request'"
 DEFAULT_SHELL = "bash --noprofile --norc -euo pipefail {0}"
 
 
@@ -223,29 +226,58 @@ def test_ci_names_every_job_that_did_not_succeed(
     assert "Jobs that did not succeed: audit failure, gitleaks cancelled" in completed.stdout
 
 
-@pytest.mark.parametrize("event", ["push", "schedule", "workflow_dispatch"])
-def test_ci_accepts_a_skipped_dependency_review_off_pull_requests(
-    workflow: dict[str, Any], needed: list[str], tmp_path: Path, event: str
+def pull_request_jobs(workflow: dict[str, Any]) -> list[str]:
+    jobs: str = find_step(workflow, CI_STEP)["env"]["PULL_REQUEST_JOBS"]
+    return jobs.split()
+
+
+def test_pull_request_jobs_are_the_needed_jobs_that_run_on_pull_requests_only(
+    workflow: dict[str, Any], needed: list[str]
 ) -> None:
-    needs = results(needed, {"dependency-review": "skipped"})
+    on_pull_requests = [job for job in needed if workflow["jobs"][job].get("if") == PULL_REQUEST_IF]
+    assert pull_request_jobs(workflow) == on_pull_requests == ["dependency-review", "mutation"]
+
+
+@pytest.mark.parametrize("event", ["push", "schedule", "workflow_dispatch"])
+@pytest.mark.parametrize("job", ["dependency-review", "mutation"])
+def test_ci_accepts_a_pull_request_job_skipped_off_pull_requests(
+    workflow: dict[str, Any], needed: list[str], tmp_path: Path, event: str, job: str
+) -> None:
+    needs = results(needed, {job: "skipped"})
     completed = run_ci(workflow, tmp_path, needs, event)
     assert completed.returncode == 0, completed.stdout + completed.stderr
+    assert (
+        f"::notice title=CI::{job} runs on pull requests only; skipped on this {event} run."
+    ) in completed.stdout
 
 
-def test_ci_fails_a_skipped_dependency_review_on_a_pull_request(
-    workflow: dict[str, Any], needed: list[str], tmp_path: Path
+@pytest.mark.parametrize("event", ["push", "schedule"])
+def test_ci_accepts_both_pull_request_jobs_skipped_off_pull_requests(
+    workflow: dict[str, Any], needed: list[str], tmp_path: Path, event: str
 ) -> None:
-    needs = results(needed, {"dependency-review": "skipped"})
+    needs = results(needed, {"dependency-review": "skipped", "mutation": "skipped"})
+    completed = run_ci(workflow, tmp_path, needs, event)
+    assert completed.returncode == 0, completed.stdout + completed.stderr
+    assert completed.stdout.count("::notice title=CI::") == 2
+
+
+@pytest.mark.parametrize("job", ["dependency-review", "mutation"])
+def test_ci_fails_a_pull_request_job_skipped_on_a_pull_request(
+    workflow: dict[str, Any], needed: list[str], tmp_path: Path, job: str
+) -> None:
+    needs = results(needed, {job: "skipped"})
     completed = run_ci(workflow, tmp_path, needs, "pull_request")
     assert completed.returncode == 1
-    assert "Jobs that did not succeed: dependency-review skipped" in completed.stdout
+    assert f"Jobs that did not succeed: {job} skipped" in completed.stdout
+    assert "::notice" not in completed.stdout
 
 
 @pytest.mark.parametrize("result", ["failure", "cancelled"])
-def test_ci_fails_a_dependency_review_that_ran_and_failed_on_a_push(
-    workflow: dict[str, Any], needed: list[str], tmp_path: Path, result: str
+@pytest.mark.parametrize("job", ["dependency-review", "mutation"])
+def test_ci_fails_a_pull_request_job_that_ran_and_failed_on_a_push(
+    workflow: dict[str, Any], needed: list[str], tmp_path: Path, result: str, job: str
 ) -> None:
-    needs = results(needed, {"dependency-review": result})
+    needs = results(needed, {job: result})
     completed = run_ci(workflow, tmp_path, needs, "push")
     assert completed.returncode == 1
 
@@ -1227,6 +1259,190 @@ def test_a_failed_spec_download_fails_the_snapshot_step(
     assert not (tmp_path / "api-specs").exists()
 
 
+# --- the surface report in the tests job ------------------------------------------
+
+SNAPSHOT = REPO_ROOT / "tests" / "snapshots" / "surface.json"
+
+
+def python_uv(tmp_path: Path) -> None:
+    """A stand-in uv whose `uv run ... python ARGS` runs this interpreter on ARGS."""
+    stand_in(
+        tmp_path / "bin",
+        "uv",
+        f'while [[ $1 != python ]]; do shift; done\nshift\nexec "{sys.executable}" "$@"',
+    )
+
+
+def write_snapshot(repo: Path, snapshot: object | None) -> None:
+    path = repo / "tests" / "snapshots" / "surface.json"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    if snapshot is None:
+        path.unlink(missing_ok=True)
+    else:
+        path.write_text(json.dumps(snapshot))
+
+
+def surface_repos(tmp_path: Path, base: object | None, *, later_base: object = None) -> Path:
+    """A checkout of a pull request's merge commit, as actions/checkout makes on one.
+
+    main holds `base` as its snapshot (None: none), and the pull request branch the
+    committed snapshot. HEAD merges the branch into main, so HEAD^1 is main as it was
+    merged. With `later_base`, main then moves on to that snapshot, past the merge.
+    """
+    checkout = tmp_path / "checkout"
+    (checkout / ".github" / "scripts").mkdir(parents=True)
+    git(checkout, "init", "--quiet", "--initial-branch=main")
+    shutil.copy(SCRIPTS / "surface_diff.py", checkout / ".github" / "scripts")
+    write_snapshot(checkout, base)
+    git(checkout, "add", ".")
+    git(checkout, "commit", "--quiet", "-m", "base")
+    git(checkout, "switch", "--quiet", "-c", "pull-request")
+    write_snapshot(checkout, committed_snapshot())
+    git(checkout, "add", ".")
+    git(checkout, "commit", "--quiet", "--allow-empty", "-m", "change")
+    git(checkout, "switch", "--quiet", "main")
+    if later_base is not None:
+        git(checkout, "switch", "--quiet", "-c", "later")
+        write_snapshot(checkout, later_base)
+        git(checkout, "add", ".")
+        git(checkout, "commit", "--quiet", "-m", "main moves on")
+        git(checkout, "switch", "--quiet", "main")
+    git(checkout, "merge", "--quiet", "--no-ff", "-m", "merge", "pull-request")
+    return checkout
+
+
+def run_surface_report(
+    workflow: dict[str, Any], tmp_path: Path, base: object | None, *, later_base: object = None
+) -> tuple[subprocess.CompletedProcess[str], str]:
+    """Run the step in a planted checkout of a merge commit."""
+    checkout = surface_repos(tmp_path, base, later_base=later_base)
+    python_uv(tmp_path)
+    summary = tmp_path / "summary.md"
+    env = {**GIT_ENV, "BASE_REF": "main", "GITHUB_STEP_SUMMARY": str(summary)}
+    completed = run_step(workflow, SURFACE_STEP, tmp_path, env, cwd=checkout)
+    return completed, summary.read_text() if summary.exists() else ""
+
+
+def committed_snapshot() -> dict[str, Any]:
+    snapshot: dict[str, Any] = json.loads(SNAPSHOT.read_text())
+    return snapshot
+
+
+def test_surface_report_lists_no_change_against_the_same_snapshot(
+    workflow: dict[str, Any], tmp_path: Path
+) -> None:
+    completed, summary = run_surface_report(workflow, tmp_path, committed_snapshot())
+    assert completed.returncode == 0, completed.stdout + completed.stderr
+    assert "surface_diff: 0 changes, 0 breaking" in completed.stdout
+    assert "::warning" not in completed.stdout
+    assert summary.startswith("### Tool surface changes against main (HEAD^1)\n```\n")
+
+
+def test_surface_report_lists_a_non_breaking_change_without_a_warning(
+    workflow: dict[str, Any], tmp_path: Path
+) -> None:
+    base = committed_snapshot()
+    base["tools"]["check_permission"]["description"] = "Older wording."
+    completed, summary = run_surface_report(workflow, tmp_path, base)
+    assert completed.returncode == 0, completed.stdout + completed.stderr
+    assert "non-breaking  tool check_permission: description changed" in summary
+    assert "::warning" not in completed.stdout
+
+
+def test_surface_report_warns_on_a_breaking_change_and_passes(
+    workflow: dict[str, Any], tmp_path: Path
+) -> None:
+    base = committed_snapshot()
+    base["tools"]["retired_tool"] = base["tools"]["check_permission"]
+    completed, summary = run_surface_report(workflow, tmp_path, base)
+    assert completed.returncode == 0, completed.stdout + completed.stderr
+    assert "BREAKING      tool retired_tool: removed" in summary
+    assert "::warning title=Breaking surface changes::See the job summary." in completed.stdout
+
+
+def test_surface_report_passes_when_the_base_has_no_snapshot(
+    workflow: dict[str, Any], tmp_path: Path
+) -> None:
+    completed, summary = run_surface_report(workflow, tmp_path, None)
+    assert completed.returncode == 0, completed.stdout + completed.stderr
+    assert "No base snapshot: main (HEAD^1) has no tests/snapshots/surface.json" in summary
+
+
+def test_surface_report_fails_when_it_cannot_compare(
+    workflow: dict[str, Any], tmp_path: Path
+) -> None:
+    completed, _ = run_surface_report(workflow, tmp_path, {"not": "a snapshot"})
+    assert completed.returncode == 2
+    assert "::error title=Surface diff::Could not compare the snapshots." in completed.stdout
+
+
+def test_surface_report_compares_with_the_merged_base_not_the_moving_tip(
+    workflow: dict[str, Any], tmp_path: Path
+) -> None:
+    # main gained a tool after this merge commit was made; the pull request did not
+    # remove it, so nothing is breaking.
+    later = committed_snapshot()
+    later["tools"]["added_later"] = later["tools"]["check_permission"]
+    completed, summary = run_surface_report(
+        workflow, tmp_path, committed_snapshot(), later_base=later
+    )
+    assert completed.returncode == 0, completed.stdout + completed.stderr
+    assert "surface_diff: 0 changes, 0 breaking" in summary
+    assert "added_later" not in summary
+
+
+def test_the_tests_job_fetches_the_merge_commit_s_base(workflow: dict[str, Any]) -> None:
+    checkout = workflow["jobs"]["tests"]["steps"][0]
+    assert checkout["uses"].startswith("actions/checkout@")
+    assert checkout["with"] == {"fetch-depth": 2, "persist-credentials": False}
+    run = find_step(workflow, SURFACE_STEP)["run"]
+    assert "git fetch" not in run
+    assert 'git show "HEAD^1:$SNAPSHOT"' in run
+
+
+# --- the mutation job ------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    ("status", "annotation"),
+    [
+        (0, None),
+        (1, "::error title=Mutation tests::The tests catch too few mutants"),
+        (2, "::error title=Mutation tests::The mutation tests did not run"),
+    ],
+)
+def test_mutation_step_maps_the_gate_s_exits(
+    workflow: dict[str, Any], tmp_path: Path, status: int, annotation: str | None
+) -> None:
+    log = tmp_path / "uv.log"
+    stand_in(tmp_path / "bin", "uv", f'echo "$*" >>"{log}"\nexit {status}')
+    completed = run_step(workflow, MUTATION_STEP, tmp_path, {})
+    assert completed.returncode == status
+    assert log.read_text() == (
+        "run --locked python .github/scripts/mutation_gate.py --base HEAD^1 --threshold 80"
+        " --workers 4 --memory-mib 3072 --max-minutes 10\n"
+    )
+    if annotation is None:
+        assert "::error" not in completed.stdout
+    else:
+        assert annotation in completed.stdout
+
+
+def test_the_mutation_job_diffs_the_merge_commit_against_its_base(
+    workflow: dict[str, Any],
+) -> None:
+    job = workflow["jobs"]["mutation"]
+    checkout, setup_uv, install, gate = job["steps"]
+    assert checkout["uses"].startswith("actions/checkout@")
+    assert checkout["with"] == {"fetch-depth": 2, "persist-credentials": False}
+    assert setup_uv["uses"].startswith("astral-sh/setup-uv@")
+    assert setup_uv["with"]["python-version"] == "3.13"
+    assert install == {"name": "Install from uv.lock", "run": "uv sync --locked"}
+    assert gate["name"] == MUTATION_STEP[1]
+    assert job["timeout-minutes"] == 15
+    assert "strategy" not in job
+
+
 # --- the workflow's gates are wired as they say ---------------------------------
 
 GATING_STEP_IFS = {
@@ -1245,8 +1461,13 @@ GATING_STEP_IFS = {
     ("audit", "Annotate blocking advisories"): "${{ !cancelled() }}",
     ("audit", "Gate on fixable HIGH and CRITICAL advisories"): "${{ !cancelled() }}",
     ("audit", "actions/upload-artifact"): "${{ !cancelled() }}",
+    SURFACE_STEP: "matrix.resolution == 'locked' && github.event_name == 'pull_request'",
 }
-GATING_JOB_IFS = {"ci": "always()", "dependency-review": "github.event_name == 'pull_request'"}
+GATING_JOB_IFS = {
+    "ci": "always()",
+    "dependency-review": PULL_REQUEST_IF,
+    "mutation": PULL_REQUEST_IF,
+}
 RUN_ID_GROUP = (
     "(github.event_name == 'schedule' || github.event_name == 'workflow_dispatch')"
     " && github.run_id || 'shared' }}"
@@ -1340,8 +1561,9 @@ def test_scheduled_and_manual_runs_have_their_own_concurrency_group(
 ) -> None:
     for name, job in workflow["jobs"].items():
         group = " ".join(job["concurrency"]["group"].split())
-        if name == "dependency-review":
-            assert job["if"] == "github.event_name == 'pull_request'"
+        if name in {"dependency-review", "mutation"}:
+            assert job["if"] == PULL_REQUEST_IF
+            assert group == f"${{{{ github.workflow }}}}-${{{{ github.ref }}}}-{name}"
         elif name == "notify":
             assert group.endswith("-${{ github.run_id }}")
         else:
@@ -1358,10 +1580,14 @@ def test_the_stdlib_scripts_run_on_the_floor_python(workflow: dict[str, Any]) ->
         for step in job["steps"]:
             run = " ".join(step.get("run", "").split())
             assert "python3" not in run, step_key(step)
-            for match in re.finditer(r"(\S+ \S+ \S+ \S+ \S+ \S+) \.github/scripts/\w+\.py", run):
+            for match in re.finditer(r"(\S+ \S+ \S+ \S+ \S+ \S+) \.github/scripts/(\w+)\.py", run):
+                if match.group(2) == "mutation_gate":
+                    # It runs mutmut, which runs the test suite: the project environment.
+                    assert match.group(1).endswith(" uv run --locked python"), run
+                    continue
                 assert match.group(1) == "uv run --no-project --python 3.11 python", run
                 calls += 1
-    assert calls >= 7
+    assert calls >= 8
 
 
 # --- the docs build ---------------------------------------------------------------

@@ -35,7 +35,8 @@ The first release on PyPI. To upgrade from the 0.1 server, follow the
   must be set.
 - Tools return JSON objects. Create, approve, deny and cancel return `status` and the request as
   Permit returns it, instead of a sentence. The list tools return Permit's paginated object, and
-  add `requesting_user` (key, email, first name and last name) to each item.
+  add `requesting_user` (key, email, first name and last name) to each item. Each tool lists an
+  output schema with these fields, so clients can read its structured result.
 - Tool arguments are validated: `page` is at least 1, `per_page` is 1 to 100, `status` is one of
   pending, approved, denied or canceled. `list_resource_instances` returns 30 results per page by
   default, instead of 100.

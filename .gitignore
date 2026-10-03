@@ -18,3 +18,6 @@ wheels/
 /docs/reference/tools.md
 /docs/llms.txt
 /.cache/
+
+# mutmut's working copy (.github/scripts/mutation_gate.py)
+mutants/
