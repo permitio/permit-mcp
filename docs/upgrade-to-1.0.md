@@ -148,4 +148,7 @@ Other changes for embedders:
 - Tools whose element is not set are not registered.
 - Tool results are JSON objects; see the
   [changelog](https://github.com/permitio/permit-mcp/blob/main/CHANGELOG.md#api).
+- The list tools no longer add `requesting_user` to each item. Read Permit's
+  `requesting_user_email`, `requesting_user_first_name` and `requesting_user_last_name` on the
+  item instead.
 - Remove any `user_id` your own code passed to the tools.

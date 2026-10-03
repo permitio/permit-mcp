@@ -129,12 +129,12 @@ and the default tenant.
 | `list_resource_instances` | List the instances of the 'documents' resource type in tenant 'default', with the ID and key of each. |
 | `check_permission` | Ask Permit whether the acting user may perform an action on the 'documents' resource type in tenant 'default', or on one instance of it (the instance key, not the ID). |
 | `create_access_request` | Request a role on the 'documents' resource type in tenant 'default', or on one instance of it. |
-| `list_access_requests` | List the access requests on the 'documents' resource type in tenant 'default' that Permit shows the acting user, with the requesting user's key, email and name added to each as requesting_user. |
+| `list_access_requests` | List the access requests of this server's access request element that Permit shows the acting user, each with the requesting user's email and name. |
 | `approve_access_request` | Approve an access request, which grants the requested role. |
 | `deny_access_request` | Deny an access request. |
 | `cancel_access_request` | Cancel an access request. |
 | `create_operation_approval` | Request one-time approval for an operation on the 'documents' resource type in tenant 'default', or on one instance of it. |
-| `list_operation_approvals` | List the operation approval requests on the 'documents' resource type in tenant 'default' that Permit shows the acting user, with the requesting user's key, email and name added to each as requesting_user. |
+| `list_operation_approvals` | List the operation approval requests of this server's operation approval element that Permit shows the acting user, each with the requesting user's email and name. |
 | `approve_operation_approval` | Approve an operation approval request. |
 | `deny_operation_approval` | Deny an operation approval request. |
 | `cancel_operation_approval` | Cancel an operation approval request. |
@@ -298,8 +298,9 @@ server.run("stdio")
 
 The examples use the Permit SDK (`permit`), a separate package.
 
-Give users names when you sync or create them in Permit. The list tools add each requesting
-user's key, email and name, which makes it easier to tell who filed a request:
+Give users names when you sync or create them in Permit. Permit puts each requesting user's
+email and name on the items the list tools return, which makes it easier to tell who filed a
+request:
 
 ```python
 from permit import Permit

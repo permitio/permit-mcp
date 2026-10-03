@@ -212,7 +212,15 @@ async def call_tool(
 AR_PATH = access_requests_path()
 ACCESS_REQUEST = {"id": AR_ID, "status": "pending", "role": "editor", "tenant": TENANT}
 OPERATION_APPROVAL = {"id": OA_ID, "status": "pending", "tenant": TENANT}
-ENVELOPE_ITEMS = [{"id": AR_ID, "status": "pending"}]
+# The requesting user's details, which Permit puts on each item of a listing.
+REQUESTER = {
+    "requesting_user_id": "8d3f6c1e-2b4a-4f9d-9c7e-5a1b2c3d4e5f",
+    "requesting_user_email": "bob@example.com",
+    "requesting_user_first_name": "Bob",
+    "requesting_user_last_name": "Builder",
+}
+ENVELOPE_ITEMS = [{"id": AR_ID, "status": "pending", **REQUESTER}]
+LISTED_APPROVAL = {**OPERATION_APPROVAL, **REQUESTER}
 
 
 @dataclass(frozen=True)
@@ -312,7 +320,6 @@ CASES: dict[str, Case] = {
                 query={
                     "status": "pending",
                     "role": "editor",
-                    "resource": RESOURCE,
                     "resource_instance_id": "doc-1",
                     "page": "3",
                     "per_page": "5",
@@ -392,7 +399,6 @@ CASES: dict[str, Case] = {
                 "GET",
                 OA_PATH,
                 query={
-                    "resource": RESOURCE,
                     "status": "pending",
                     "resource_instance": "doc-1",
                     "page": "2",
@@ -401,8 +407,8 @@ CASES: dict[str, Case] = {
                 authorization=ELEMENT_AUTH,
             ),
         ),
-        response={"data": [OPERATION_APPROVAL], "total_count": 1, "page_count": 1},
-        expected={"data": [OPERATION_APPROVAL], "total_count": 1, "page_count": 1},
+        response={"data": [LISTED_APPROVAL], "total_count": 1, "page_count": 1},
+        expected={"data": [LISTED_APPROVAL], "total_count": 1, "page_count": 1},
     ),
     "approve_operation_approval": Case(
         arguments={"operation_approval_id": OA_ID, "reviewer_comment": "go ahead"},

@@ -1246,7 +1246,7 @@ def test_a_pull_request_reports_against_the_committed_inventory(
     )
     assert completed.returncode == 0, completed.stdout + completed.stderr
     text = summary.read_text(encoding="utf-8")
-    assert "| Control plane | 24 | 13 | 0 | 11 |" in text
+    assert "| Control plane | 23 | 12 | 0 | 11 |" in text
     assert "taken from https://api.permit.io/v2/openapi.json" in text
     assert "baseline" not in text
 

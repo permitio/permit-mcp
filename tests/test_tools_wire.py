@@ -6,16 +6,11 @@ Authorization) and the value the MCP client receives back.
 
 from __future__ import annotations
 
-import json
-import re
 import socket
-import threading
-import time
 from dataclasses import replace
 from typing import TYPE_CHECKING, Any
 
 import pytest
-from werkzeug import Response
 
 from permit_mcp import TOOL_NAMES, bound_user
 from permit_mcp.permit_api import PermitApi, PermitApiError
@@ -30,12 +25,13 @@ from tests.support import (
     ELEMENT_AUTH,
     ELEMENT_TOKEN,
     ELEMENTS_TOKEN_TOOLS,
-    FACTS,
     LOGIN_PATH,
     LOGIN_RESPONSE,
+    OA_ID,
     OA_PATH,
     PDP_PATH,
     REDIRECT_TOKEN,
+    REQUESTER,
     RESOURCE,
     SCOPE_PATH,
     TENANT,
@@ -58,14 +54,11 @@ from tests.support import (
 )
 
 if TYPE_CHECKING:
-    from collections.abc import Callable
-
     from pytest_httpserver import HTTPServer
-    from werkzeug import Request
 
     from permit_mcp import Settings
 
-LISTING = Call("GET", AR_PATH, query={"resource": RESOURCE, "page": "1", "per_page": "30"})
+LIST_TOOLS = ["list_access_requests", "list_operation_approvals"]
 
 
 async def test_every_tool_has_a_case(settings: Settings) -> None:
@@ -171,54 +164,49 @@ async def test_login_http_error_fails_before_the_elements_call(
     assert recorded(api) == [login_call()]
 
 
-async def test_list_access_requests_adds_each_requesting_user_once(
-    api: HTTPServer, settings: Settings
+@pytest.mark.parametrize("name", LIST_TOOLS)
+@pytest.mark.parametrize("filtered", [True, False], ids=["filters", "no-filters"])
+async def test_list_query_carries_no_resource(
+    api: HTTPServer, settings: Settings, name: str, *, filtered: bool
 ) -> None:
-    users = {
-        "u1": {
-            "key": "u1",
-            "email": "u1@example.com",
-            "first_name": "Uma",
-            "last_name": "One",
-        },
-        "u2": {
-            "key": "u2",
-            "email": "u2@example.com",
-            "first_name": "Ugo",
-            "last_name": "Two",
-        },
-    }
+    # The element scopes a listing. For an RBAC element, Permit matches a resource filter
+    # against a value it never stores, and lists nothing.
+    case = CASES[name]
+    serve_case(api, case)
+
+    result = await call_tool(settings, name, case.arguments if filtered else {})
+
+    payload(result)
+    listing = recorded(api)[-1]
+    assert listing.path == case.calls[-1].path
+    assert "resource" not in listing.query
+    assert RESOURCE not in listing.query.values()
+
+
+@pytest.mark.parametrize("name", LIST_TOOLS)
+async def test_list_returns_requesters_as_permit_sends_them(
+    api: HTTPServer, settings: Settings, name: str
+) -> None:
+    case = CASES[name]
     items = [
-        {"id": "ar-1", "requesting_user_id": "u1"},
-        {"id": "ar-2", "requesting_user_id": "u1"},
-        {"id": "ar-3", "requesting_user_id": "u2"},
+        {"id": AR_ID, "status": "pending", **REQUESTER},
+        {"id": OA_ID, "status": "approved", "requesting_user_id": "gone"},
+        {"id": "no-requester", "status": "pending"},
     ]
-    listing = Call("GET", AR_PATH, query={"resource": RESOURCE, "page": "1", "per_page": "30"})
-    serve_json(api, listing, {"data": items, "total_count": 3, "page_count": 1})
-    for key, user in users.items():
-        serve_json(api, Call("GET", f"{FACTS}/users/{key}"), {**user, "id": f"id-{key}"})
+    listing = {"data": items, "total_count": 3, "page_count": 1, "extra": {"kept": True}}
+    serve_case(api, case, response=listing)
 
-    result = await call_tool(settings, "list_access_requests", {})
+    result = await call_tool(settings, name, case.arguments)
 
-    data = payload(result)["data"]
-    assert [item["id"] for item in data] == ["ar-1", "ar-2", "ar-3"]
-    assert [item["requesting_user"] for item in data] == [
-        users["u1"],
-        users["u1"],
-        users["u2"],
-    ]
-    first, *lookups = recorded(api)
-    assert first == listing
-    assert sorted(lookups, key=lambda call: call.path) == [
-        Call("GET", f"{FACTS}/users/u1"),
-        Call("GET", f"{FACTS}/users/u2"),
-    ]
+    assert payload(result) == listing
+    assert recorded(api) == list(case.calls)
+    assert not [call for call in recorded(api) if "/users" in call.path]
 
 
 async def test_list_access_requests_omits_unset_filters(
     api: HTTPServer, settings: Settings
 ) -> None:
-    listing = Call("GET", AR_PATH, query={"resource": RESOURCE, "page": "1", "per_page": "30"})
+    listing = Call("GET", AR_PATH, query={"page": "1", "per_page": "30"})
     serve_json(api, listing, {"data": [], "total_count": 0, "page_count": 0})
 
     result = await call_tool(settings, "list_access_requests", {})
@@ -233,7 +221,7 @@ async def test_list_operation_approvals_omits_unset_filters(
     listing = Call(
         "GET",
         OA_PATH,
-        query={"resource": RESOURCE, "page": "1", "per_page": "30"},
+        query={"page": "1", "per_page": "30"},
         authorization=ELEMENT_AUTH,
     )
     serve_json(api, login_call(), LOGIN_RESPONSE)
@@ -493,7 +481,7 @@ async def test_login_response_that_is_not_an_object_fails_before_the_elements_ca
     assert recorded(api) == [login_call()]
 
 
-@pytest.mark.parametrize("name", ["list_access_requests", "list_operation_approvals"])
+@pytest.mark.parametrize("name", LIST_TOOLS)
 @pytest.mark.parametrize(
     "listing", [{"items": []}, {"data": {"id": "x"}}, []], ids=["no-data", "data-object", "list"]
 )
@@ -504,7 +492,11 @@ async def test_listing_without_a_data_list_is_an_error(
 
     result = await call_tool(settings, name, {})
 
-    assert "expected an object with a data list" in error_text(result)
+    operation = name.replace("_", " ")
+    assert (
+        f"Permit API call to {operation} returned an unexpected shape: expected an object "
+        "with a data list."
+    ) in error_text(result)
 
 
 async def test_unreachable_api_names_the_host() -> None:
@@ -518,77 +510,6 @@ async def test_unreachable_api_names_the_host() -> None:
     text = error_text(result)
     assert "127.0.0.1" in text
     assert API_KEY not in text
-
-
-def users_handler(
-    users: dict[str, dict[str, str]], *, delay: float = 0.0
-) -> tuple[Callable[[Request], Response], dict[str, int]]:
-    """Return a handler serving `users` by key (404 otherwise) and its concurrency counts."""
-    counts = {"in_flight": 0, "max_in_flight": 0, "requests": 0}
-    lock = threading.Lock()
-
-    def handle(request: Request) -> Response:
-        key = request.path.rsplit("/", 1)[-1]
-        with lock:
-            counts["requests"] += 1
-            counts["in_flight"] += 1
-            counts["max_in_flight"] = max(counts["max_in_flight"], counts["in_flight"])
-        try:
-            time.sleep(delay)
-        finally:
-            with lock:
-                counts["in_flight"] -= 1
-        if key not in users:
-            return Response('{"detail": "not found"}', status=404, mimetype="application/json")
-        return Response(json.dumps(users[key]), mimetype="application/json")
-
-    return handle, counts
-
-
-USERS_URI = re.compile(rf"{re.escape(FACTS)}/users/[^/]+")
-
-
-async def test_user_lookups_run_at_most_five_at_a_time(api: HTTPServer, settings: Settings) -> None:
-    users = {
-        f"u{n}": {"key": f"u{n}", "email": f"u{n}@example.com", "first_name": "U", "last_name": "N"}
-        for n in range(12)
-    }
-    items = [{"id": f"ar-{key}", "requesting_user_id": key} for key in users]
-    serve_json(api, LISTING, {"data": items, "total_count": 12, "page_count": 1})
-    handler, counts = users_handler(users, delay=0.1)
-    api.expect_request(USERS_URI, method="GET").respond_with_handler(handler)
-
-    result = await call_tool(settings, "list_access_requests", {})
-
-    assert [item["requesting_user"] for item in payload(result)["data"]] == list(users.values())
-    assert counts["requests"] == 12
-    assert 1 < counts["max_in_flight"] <= 5
-
-
-async def test_unknown_requesting_user_is_null(api: HTTPServer, settings: Settings) -> None:
-    items = [{"id": "ar-1", "requesting_user_id": "gone"}, {"id": "ar-2"}]
-    serve_json(api, LISTING, {"data": items, "total_count": 2, "page_count": 1})
-    handler, _ = users_handler({})
-    api.expect_request(USERS_URI, method="GET").respond_with_handler(handler)
-
-    result = await call_tool(settings, "list_access_requests", {})
-
-    assert payload(result)["data"] == [
-        {"id": "ar-1", "requesting_user_id": "gone", "requesting_user": None},
-        {"id": "ar-2"},
-    ]
-
-
-async def test_failed_user_lookup_fails_the_listing(api: HTTPServer, settings: Settings) -> None:
-    items = [{"id": "ar-1", "requesting_user_id": "u1"}]
-    serve_json(api, LISTING, {"data": items, "total_count": 1, "page_count": 1})
-    serve_json(api, Call("GET", f"{FACTS}/users/u1"), {"detail": "boom"}, status=500)
-
-    result = await call_tool(settings, "list_access_requests", {})
-
-    text = error_text(result)
-    assert "get user" in text
-    assert "HTTP 500" in text
 
 
 async def test_check_permission_without_an_instance_checks_the_type(

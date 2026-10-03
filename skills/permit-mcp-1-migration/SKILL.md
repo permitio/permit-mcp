@@ -286,8 +286,10 @@ The other argument changes, from the changelog:
   100.
 - Results are JSON objects. Create, approve, deny and cancel return `status` and the request,
   not a sentence such as `Your request has been successfully sent`; update code that checks
-  the old text. The list tools return Permit's paginated object, with `requesting_user` added
-  to each item.
+  the old text. The list tools return Permit's paginated object as it is, without the
+  `requesting_user` 0.1 added to each item; code that read it reads Permit's
+  `requesting_user_email`, `requesting_user_first_name` and `requesting_user_last_name`
+  instead.
 
 The tool names are the same as in 0.1.
 

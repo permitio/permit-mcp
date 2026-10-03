@@ -5,9 +5,8 @@ user. The access-request calls other than cancel name that user in the request p
 Permit applies the user's Elements permissions: a reviewer must be allowed to review, and
 nobody approves their own request. Cancelling an access request and the operation-approval
 calls first log in to Elements as that user and send the Elements token the login returns.
-Listing resource instances and looking up the requesting users of a listing use the
-server's API key. The permission check asks the PDP about the acting user, and
-authenticates to the PDP with the server's API key.
+Listing resource instances uses the server's API key. The permission check asks the PDP about
+the acting user, and authenticates to the PDP with the server's API key.
 """
 
 import asyncio
@@ -26,7 +25,6 @@ from permit_mcp.config import DEFAULT_PDP_URL, ENV_VARS, Settings
 
 MAX_ERROR_BODY = 2000
 REQUEST_TIMEOUT_SECONDS = 30
-MAX_CONCURRENT_USER_LOOKUPS = 5
 
 Decision = Literal["approve", "deny"]
 ElementSetting = Literal["access_request_element", "operation_approval_element"]
@@ -178,7 +176,11 @@ class PermitApi:
         page: int,
         per_page: int,
     ) -> object:
-        """List the access requests of the configured resource that `user` may see.
+        """List the access requests of the configured element that `user` may see.
+
+        The element scopes the listing, so no resource filter is sent. Permit compares that
+        filter with what it stores for each request, and for an RBAC element the two never
+        match, so the listing would be empty.
 
         Args:
             user: Key of the acting user.
@@ -195,7 +197,6 @@ class PermitApi:
         query: dict[str, str | int | None] = {
             "status": status,
             "role": role,
-            "resource": self._settings.resource,
             "resource_instance_id": resource_instance,
             "page": page,
             "per_page": per_page,
@@ -286,7 +287,9 @@ class PermitApi:
         page: int,
         per_page: int,
     ) -> object:
-        """List the operation approvals of the configured resource that `user` may see.
+        """List the operation approvals of the configured element that `user` may see.
+
+        The element scopes the listing, so no resource filter is sent.
 
         Args:
             user: Key of the acting user.
@@ -300,7 +303,6 @@ class PermitApi:
 
         """
         query: dict[str, str | int | None] = {
-            "resource": self._settings.resource,
             "status": status,
             "resource_instance": resource_instance,
             "page": page,
@@ -416,36 +418,6 @@ class PermitApi:
                 operation, None, "the PDP answered without a boolean allow", service=_PDP
             )
         return allow
-
-    async def get_users(self, ids: Iterable[str]) -> dict[str, object]:
-        """Fetch users by ID or key: one request per distinct ID, at most 5 at a time.
-
-        Args:
-            ids: IDs or keys of users; repeats are fetched once.
-
-        Returns:
-            Each ID mapped to the user as the API returns it. An ID the API answers with
-            404 (such as a deleted user) is left out.
-
-        Raises:
-            PermitApiError: A lookup failed with anything other than 404.
-
-        """
-        limit = asyncio.Semaphore(MAX_CONCURRENT_USER_LOOKUPS)
-
-        async def fetch(user_id: str) -> tuple[str, object]:
-            async with limit:
-                url = await self._environment_url("facts", "users", user_id)
-                try:
-                    return user_id, await self._call("get user", "GET", url)
-                except PermitApiError as exc:
-                    if exc.status == http.HTTPStatus.NOT_FOUND:
-                        return user_id, None
-                    raise
-
-        distinct = list(dict.fromkeys(ids))
-        results = await asyncio.gather(*(fetch(user_id) for user_id in distinct))
-        return {user_id: user for user_id, user in results if user is not None}
 
     async def _key_scope(self) -> tuple[str, str]:
         """Return the project and environment IDs of the API key, asked for once."""

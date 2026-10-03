@@ -159,15 +159,21 @@ class OperationApprovalCanceled(TypedDict):
     operation_approval: OperationApproval
 
 
-# Permit's page object, with each item's requesting_user added; its other keys, such as
-# total_count and page_count, pass through.
+# Permit's page object as it is; its other keys, such as total_count and page_count, pass
+# through.
 @with_config(ConfigDict(extra="allow"))
 class RequestPage(TypedDict):
     """What list_access_requests and list_operation_approvals return."""
 
     data: Annotated[
         list[Any],
-        Field(description="The requests, each with requesting_user (key, email and name)."),
+        Field(
+            description=(
+                "The requests as Permit returns them. Each holds the requesting user's email "
+                "and name in requesting_user_email, requesting_user_first_name and "
+                "requesting_user_last_name."
+            )
+        ),
     ]
 
 
@@ -242,9 +248,7 @@ class PermitTools:
             f"the '{self._settings.resource}' resource type in tenant '{self._settings.tenant}'"
         )
         acting = "Acts as the caller's Permit user."
-        with_requester = (
-            "with the requesting user's key, email and name added to each as requesting_user"
-        )
+        with_requester = "each with the requesting user's email and name"
         return {
             LIST_RESOURCE_INSTANCES: (
                 self._list_resource_instances,
@@ -279,8 +283,8 @@ class PermitTools:
             "list_access_requests": (
                 self._list_access_requests,
                 (
-                    f"List the access requests on {target} that Permit shows the acting user, "
-                    f"{with_requester}. {acting}"
+                    "List the access requests of this server's access request element that "
+                    f"Permit shows the acting user, {with_requester}. {acting}"
                 ),
                 _READ,
             ),
@@ -320,8 +324,8 @@ class PermitTools:
             "list_operation_approvals": (
                 self._list_operation_approvals,
                 (
-                    f"List the operation approval requests on {target} that Permit shows the "
-                    f"acting user, {with_requester}. {acting}"
+                    "List the operation approval requests of this server's operation approval "
+                    f"element that Permit shows the acting user, {with_requester}. {acting}"
                 ),
                 _READ,
             ),
@@ -429,7 +433,7 @@ class PermitTools:
                 per_page=per_page,
             )
         )
-        return await self._with_requesting_users("list access requests", listed)
+        return _request_page("list access requests", listed)
 
     async def _approve_access_request(
         self,
@@ -508,7 +512,7 @@ class PermitTools:
                 per_page=per_page,
             )
         )
-        return await self._with_requesting_users("list operation approvals", listed)
+        return _request_page("list operation approvals", listed)
 
     async def _approve_operation_approval(
         self,
@@ -578,40 +582,21 @@ class PermitTools:
             raise ToolError(msg)
         return user
 
-    async def _with_requesting_users(self, operation: str, listed: object) -> RequestPage:
-        """Add each item's requesting user to `listed` as `requesting_user`, and return it.
 
-        `requesting_user` holds the user's key, email, first_name and last_name, or is None
-        when Permit has no such user.
+def _request_page(operation: str, listed: object) -> RequestPage:
+    """Return `listed`, Permit's paginated object, as it is.
 
-        Raises:
-            ToolError: `listed` is not a paginated object, or a user lookup failed.
+    Raises:
+        ToolError: `listed` is not an object with a data list.
 
-        """
-        if not isinstance(listed, dict) or not isinstance(listed.get("data"), list):
-            msg = (
-                f"Permit API call to {operation} returned an unexpected shape: expected an "
-                "object with a data list."
-            )
-            raise ToolError(msg)
-        items = [item for item in listed["data"] if isinstance(item, dict)]
-        ids = [
-            item["requesting_user_id"]
-            for item in items
-            if isinstance(item.get("requesting_user_id"), str)
-        ]
-        users = await _translate(self._api.get_users(ids)) if ids else {}
-        for item in items:
-            user_id = item.get("requesting_user_id")
-            if not isinstance(user_id, str):
-                continue
-            found = users.get(user_id)
-            item["requesting_user"] = (
-                {field: found.get(field) for field in ("key", "email", "first_name", "last_name")}
-                if isinstance(found, dict)
-                else None
-            )
-        return cast("RequestPage", listed)  # pragma: no mutate - cast() does nothing at run time
+    """
+    if not isinstance(listed, dict) or not isinstance(listed.get("data"), list):
+        msg = (
+            f"Permit API call to {operation} returned an unexpected shape: expected an "
+            "object with a data list."
+        )
+        raise ToolError(msg)
+    return cast("RequestPage", listed)  # pragma: no mutate - cast() does nothing at run time
 
 
 async def _translate(call: Awaitable[_T]) -> _T:

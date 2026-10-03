@@ -4,8 +4,7 @@
       "tags": ["Access Requests (EAP)", "Operation Approval (EAP)"],
       "operations": [
         "GET /v2/api-key/scope",
-        "GET /v2/facts/{proj_id}/{env_id}/resource_instances",
-        "GET /v2/facts/{proj_id}/{env_id}/users/{user_id}"
+        "GET /v2/facts/{proj_id}/{env_id}/resource_instances"
       ]
     },
     "pdp": {

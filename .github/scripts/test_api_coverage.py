@@ -58,7 +58,7 @@ WIRE_CASES: dict[str, list[tuple[str, str]]] = {
     "list_resource_instances": [("GET", f"{FACTS}/resource_instances")],
     "check_permission": [CHECK],
     "create_access_request": [("POST", AR)],
-    "list_access_requests": [("GET", AR), ("GET", f"{FACTS}/users/u1")],
+    "list_access_requests": [("GET", AR)],
     "approve_access_request": [("PUT", f"{AR}/{AR_ID}/approve")],
     "deny_access_request": [("PUT", f"{AR}/{AR_ID}/deny")],
     "cancel_access_request": [LOGIN, ("PUT", f"{AR_ELEMENTS}/{AR_ID}/cancel")],
@@ -211,7 +211,7 @@ def entry(allowlist: dict[str, Any], operation: str) -> dict[str, Any]:
 def test_the_wire_cases_cover_the_committed_scope(record: Path) -> None:
     result = report(record)
     assert result.returncode == 0, result.stdout + result.stderr
-    assert "| Control plane | 24 | 13 | 0 | 11 |" in result.stdout
+    assert "| Control plane | 23 | 12 | 0 | 11 |" in result.stdout
     assert "| PDP | 1 | 1 | 0 | 0 |" in result.stdout
     assert "SDK-only requests: 1." in result.stdout
     assert "get access request: not exposed as a tool" in result.stdout
@@ -237,7 +237,7 @@ def test_the_committed_inventories_are_what_snapshot_writes() -> None:
     assert read(api_coverage.source_file(CONTROL_PLANE))["source"] == (
         "https://api.permit.io/v2/openapi.json"
     )
-    assert len(read(CONTROL_PLANE)["operations"]) == 24
+    assert len(read(CONTROL_PLANE)["operations"]) == 23
     assert read(PDP)["operations"] == [
         {
             "deprecated": False,
@@ -259,7 +259,7 @@ def test_deleting_a_wire_case_fails_the_report(tmp_path: Path) -> None:
     result = report(record)
     assert result.returncode == 1
     assert f"- `Control plane {DENY_OA}`: {UNEXPLAINED}" in result.stdout
-    assert "| Control plane | 24 | 12 | 0 | 12 |" in result.stdout
+    assert "| Control plane | 23 | 11 | 0 | 12 |" in result.stdout
     assert "::error title=API coverage::unexplained: Control plane PUT" in result.stdout
 
 
@@ -291,19 +291,19 @@ def test_an_sdk_only_entry_without_a_reason_fails_the_report(
 def test_an_untested_operation_with_a_reason_passes(
     tmp_path: Path, allowlist: dict[str, Any]
 ) -> None:
-    lines = [item for item in wire_record() if "/users/" not in item["path"]]
+    lines = [item for item in wire_record() if "/resource_instances" not in item["path"]]
     record = write_record(tmp_path / "record.jsonl", [*lines, line(*SCOPE, "pad")])
     allowlist["operations"].append(
         {
             "api": "control-plane",
-            "operation": "GET /v2/facts/{proj_id}/{env_id}/users/{user_id}",
+            "operation": "GET /v2/facts/{proj_id}/{env_id}/resource_instances",
             "status": "untested",
             "reason": "planted",
         }
     )
     result = report(record, allowlist=write_json(tmp_path / "allowlist.json", allowlist))
     assert result.returncode == 0, result.stdout
-    assert "| Control plane | 24 | 12 | 1 | 11 |" in result.stdout
+    assert "| Control plane | 23 | 11 | 1 | 11 |" in result.stdout
     assert "| untested | planted |" in result.stdout
 
 
@@ -466,11 +466,11 @@ def test_the_template_with_the_most_literal_segments_wins(tmp_path: Path) -> Non
 
 def test_an_escaped_slash_stays_inside_its_segment() -> None:
     inventory = api_coverage.load_inventory("control-plane", CONTROL_PLANE)
-    user = inventory.match("GET", f"{FACTS}/users/a%2Fb")
-    assert user is not None
-    assert user.operation_id == "get_user"
-    assert inventory.match("GET", f"{FACTS}/users/a/b") is None
-    assert inventory.match("GET", f"{FACTS}/users/u1/extra") is None
+    approval = inventory.match("GET", f"{OA}/a%2Fb")
+    assert approval is not None
+    assert approval.operation_id == "get_operation_approval"
+    assert inventory.match("GET", f"{OA}/a/b") is None
+    assert inventory.match("GET", f"{OA}/{OA_ID}/extra") is None
 
 
 def test_the_method_must_match() -> None:
@@ -524,18 +524,20 @@ NEW_OPERATION = {
             "deprecated False -> True",
         ),
         (
-            lambda ops: with_operation_id(ops, "get_user").update(operationId="fetch_user"),
-            "operationId 'get_user' -> 'fetch_user'",
+            lambda ops: with_operation_id(ops, "get_operation_approval").update(
+                operationId="fetch_operation_approval"
+            ),
+            "operationId 'get_operation_approval' -> 'fetch_operation_approval'",
         ),
         (
             lambda ops: with_operation_id(ops, "deny_operation_approval").update(tags=["Other"]),
             "tags ['Operation Approval (EAP)'] -> ['Other']",
         ),
         (
-            lambda ops: with_operation_id(ops, "get_user").update(
-                path="/v2/facts/{proj_id}/{env_id}/users/{user_key}"
+            lambda ops: with_operation_id(ops, "get_operation_approval").update(
+                path=f"{OA_TEMPLATE}/{{approval_id}}"
             ),
-            "path '/v2/facts/{proj_id}/{env_id}/users/{user_id}' -> ",
+            f"path '{OA_TEMPLATE}/{{operation_approval_id}}' -> ",
         ),
         (rename_parameter, "'query resource_instance_id'"),
         (

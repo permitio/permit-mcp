@@ -889,33 +889,6 @@
       "tags": [
         "Resource Instances"
       ]
-    },
-    {
-      "deprecated": false,
-      "method": "GET",
-      "operationId": "get_user",
-      "parameters": [
-        {
-          "in": "path",
-          "name": "env_id",
-          "required": true
-        },
-        {
-          "in": "path",
-          "name": "proj_id",
-          "required": true
-        },
-        {
-          "in": "path",
-          "name": "user_id",
-          "required": true
-        }
-      ],
-      "path": "/v2/facts/{proj_id}/{env_id}/users/{user_id}",
-      "requestBody": null,
-      "tags": [
-        "Users"
-      ]
     }
   ]
 }

@@ -656,7 +656,7 @@
         "openWorldHint": false,
         "readOnlyHint": true
       },
-      "description": "List the access requests on the 'documents' resource type in tenant 'acme' that Permit shows the acting user, with the requesting user's key, email and name added to each as requesting_user. Acts as the caller's Permit user.",
+      "description": "List the access requests of this server's access request element that Permit shows the acting user, each with the requesting user's email and name. Acts as the caller's Permit user.",
       "input_schema": {
         "properties": {
           "page": {
@@ -730,7 +730,7 @@
         "description": "What list_access_requests and list_operation_approvals return.",
         "properties": {
           "data": {
-            "description": "The requests, each with requesting_user (key, email and name).",
+            "description": "The requests as Permit returns them. Each holds the requesting user's email and name in requesting_user_email, requesting_user_first_name and requesting_user_last_name.",
             "items": {},
             "title": "Data",
             "type": "array"
@@ -748,7 +748,7 @@
         "openWorldHint": false,
         "readOnlyHint": true
       },
-      "description": "List the operation approval requests on the 'documents' resource type in tenant 'acme' that Permit shows the acting user, with the requesting user's key, email and name added to each as requesting_user. Acts as the caller's Permit user.",
+      "description": "List the operation approval requests of this server's operation approval element that Permit shows the acting user, each with the requesting user's email and name. Acts as the caller's Permit user.",
       "input_schema": {
         "properties": {
           "page": {
@@ -808,7 +808,7 @@
         "description": "What list_access_requests and list_operation_approvals return.",
         "properties": {
           "data": {
-            "description": "The requests, each with requesting_user (key, email and name).",
+            "description": "The requests as Permit returns them. Each holds the requesting user's email and name in requesting_user_email, requesting_user_first_name and requesting_user_last_name.",
             "items": {},
             "title": "Data",
             "type": "array"
