@@ -4,7 +4,7 @@
 #
 # Usage: audit-deps.sh <output-dir>
 #
-# Writes four dependency trees to <output-dir>, each as a directory holding a
+# Writes five dependency trees to <output-dir>, each as a directory holding a
 # file named requirements.txt, and one Trivy JSON report per tree:
 #
 #   runtime-ceiling/  + trivy-runtime-ceiling.json
@@ -20,10 +20,14 @@
 #       [project].dependencies plus the docs group, newest resolution. What
 #       builds the API reference site in CI and the Pages workflow; it never
 #       ships to a user.
+#   example-ceiling/  + trivy-example-ceiling.json
+#       examples/food-ordering-system's dependencies, newest resolution, with
+#       permit-mcp from this checkout through the example's [tool.uv.sources]:
+#       what someone running the example installs. It never ships to a user.
 #
-# The trees are compiled from pyproject.toml, not exported from uv.lock: the
-# lock pins this repository's own environment, while consumers resolve the
-# published ranges.
+# The trees are compiled from the pyproject.toml files, not exported from the
+# uv.lock files: a lock pins a development environment, while consumers resolve
+# the published ranges.
 #
 # Exits 1 when a tree does not resolve or resolves to almost nothing, when the
 # runtime-floor tree is not at the declared floors (check_floors.py), and when
@@ -47,20 +51,31 @@ MIN_PACKAGES=10
 # The trees compiled, in order, for the Trivy loop below.
 TREES=()
 
+# compile_tree <name> <resolution> <sources> <requirements and groups...>
+#
+# <sources> is "published" or "local". published: --no-sources, as the published
+# build ignores [tool.uv.sources]. local: the sources apply, for the example,
+# which installs permit-mcp from this checkout.
 compile_tree() {
-  local name="$1" resolution="$2"
-  shift 2
+  local name="$1" resolution="$2" sources="$3"
+  shift 3
   mkdir -p "${OUT}/${name}"
-  # --no-sources: the published build ignores [tool.uv.sources]. --exclude-newer
-  # false: the publish-age cooldown in [tool.uv] applies to this repository's
-  # uv.lock only; consumers resolve against the index as it is today.
+  # --exclude-newer false: the publish-age cooldown in [tool.uv] applies to the
+  # uv.lock files only; consumers resolve against the index as it is today.
   local args=(
-    --no-sources
     --exclude-newer false
     --python-version "${PYTHON_VERSION}"
     --quiet
     -o "${OUT}/${name}/requirements.txt"
   )
+  case ${sources} in
+    published) args=(--no-sources "${args[@]}") ;;
+    local) ;;
+    *)
+      echo "::error title=audit-deps.sh::Tree '${name}': unknown sources '${sources}'."
+      exit 2
+      ;;
+  esac
   if [[ -n ${resolution} ]]; then
     args+=(--resolution "${resolution}")
   fi
@@ -83,16 +98,17 @@ echo "::group::Resolving dependency trees (Python ${PYTHON_VERSION})"
 # transitive dependency back to its first release.
 # The runtime trees are compiled without the dev group, so a dev tool cannot
 # raise a runtime floor and hide what a consumer can install.
-compile_tree runtime-ceiling "" "${REPO_ROOT}/pyproject.toml"
-compile_tree runtime-floor "lowest-direct" "${REPO_ROOT}/pyproject.toml"
+compile_tree runtime-ceiling "" published "${REPO_ROOT}/pyproject.toml"
+compile_tree runtime-floor "lowest-direct" published "${REPO_ROOT}/pyproject.toml"
 # lowest-direct moves past a floor it cannot install without saying so.
 uv run --no-project --python "${PYTHON_VERSION}" python \
   "${REPO_ROOT}/.github/scripts/check_floors.py" "${REPO_ROOT}/pyproject.toml" \
   "${OUT}/runtime-floor/requirements.txt"
-compile_tree dev-ceiling "" "${REPO_ROOT}/pyproject.toml" \
+compile_tree dev-ceiling "" published "${REPO_ROOT}/pyproject.toml" \
   --group "${REPO_ROOT}/pyproject.toml:dev"
-compile_tree docs-ceiling "" "${REPO_ROOT}/pyproject.toml" \
+compile_tree docs-ceiling "" published "${REPO_ROOT}/pyproject.toml" \
   --group "${REPO_ROOT}/pyproject.toml:docs"
+compile_tree example-ceiling "" local "${REPO_ROOT}/examples/food-ordering-system/pyproject.toml"
 
 # The package count cannot tell a group's tree from a runtime one: a --group
 # that matched nothing would scan the runtime tree again.
@@ -104,6 +120,11 @@ fi
 if ! grep -q '^zensical==' "${OUT}/docs-ceiling/requirements.txt"; then
   echo "::error title=Dependency resolution failed::Tree 'docs-ceiling' has no zensical," \
     "so the docs group was not resolved."
+  exit 1
+fi
+if ! grep -q '^google-genai==' "${OUT}/example-ceiling/requirements.txt"; then
+  echo "::error title=Dependency resolution failed::Tree 'example-ceiling' has no" \
+    "google-genai, so the example's dependencies were not resolved."
   exit 1
 fi
 echo "::endgroup::"

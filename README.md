@@ -355,6 +355,7 @@ async def create_document(document_id: str, title: str) -> None:
 
 - [Access Request MCP on docs.permit.io](https://docs.permit.io/ai-security/access-request-mcp/overview)
 - [API reference](https://permitio.github.io/permit-mcp/)
+- [Example: a family food-ordering chat](https://github.com/permitio/permit-mcp/tree/main/examples/food-ordering-system)
 - [Upgrade guide from 0.1](https://github.com/permitio/permit-mcp/blob/main/docs/upgrade-to-1.0.md)
 - [Changelog](https://github.com/permitio/permit-mcp/blob/main/CHANGELOG.md)
 - [Contributing](https://github.com/permitio/permit-mcp/blob/main/CONTRIBUTING.md)

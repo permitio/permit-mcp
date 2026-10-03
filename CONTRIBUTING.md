@@ -142,7 +142,8 @@ and manual runs a skipped `e2e` fails CI, since there it means the job's `if:` b
 | `tests` | `python -m pytest -q -W error` on Python 3.11 to 3.14, installed from the ranges in `pyproject.toml` at their newest (`highest`) and lowest (`lowest-direct`) versions, and on 3.13 from `uv.lock` (`uv sync --locked`); then a check that no test skipped. The `uv.lock` leg also runs the API coverage report (below), and on a pull request lists the surface snapshot's changes against the base branch |
 | `package` | `uv build --no-sources`, a check of the wheel and sdist contents and of the wheel's metadata against `pyproject.toml` (`check_dist.py`, as the release runs it), and the `permit-mcp` command from the installed wheel, which must exit 2 without configuration |
 | `docs` | `.github/scripts/build-docs.sh`: builds the API reference site, fails on any warning, and checks what was built with `check_site.py` (see [the API reference site](#the-api-reference-site)) |
-| `audit` | Trivy on the runtime dependency trees (newest and lowest), the dev tree and the docs tree (the `docs` group); fails on a fixable HIGH or CRITICAL advisory. In the run `release.yml` calls, the dev and docs trees are reported but do not fail it (the `gate-dev-tree` input) |
+| `example` | The food-ordering example (`examples/food-ordering-system`), a uv project with its own `uv.lock`: `uv sync --locked`, ruff (the root's configuration), mypy (the example's strict configuration) and its offline tests, then a check that no test skipped |
+| `audit` | Trivy on the runtime dependency trees (newest and lowest), the dev tree, the docs tree (the `docs` group) and the example's tree; fails on a fixable HIGH or CRITICAL advisory. In the run `release.yml` calls, the dev, docs and example trees are reported but do not fail it (the `gate-dev-tree` input) |
 | `audit-scripts` | `uv run --locked --only-dev pytest -c .github/scripts/pytest.ini -q .github/scripts` |
 | `dependency-review` | GitHub's dependency review; fails a pull request that adds a dependency or action with a HIGH or CRITICAL advisory |
 | `mutation` | `.github/scripts/mutation_gate.py` on the package lines a pull request changes; fails when the tests catch fewer than 80% of the mutants |
@@ -274,6 +275,12 @@ exclude-newer-package = { <package> = false }
 
 Then run `uv lock --upgrade-package <package>` and commit both `pyproject.toml` and `uv.lock`.
 Remove the entry once the release is older than 7 days.
+
+The food-ordering example (`examples/food-ordering-system`) has its own `pyproject.toml` and
+`uv.lock`, and installs this package from the checkout. Its lock records this package's
+metadata, dependency groups included, so a change to the root `pyproject.toml`, such as a
+Dependabot update of the dev group, can make it stale; the `uv-lock-example` hook then fails.
+Run `uv lock --directory examples/food-ordering-system` and commit the result.
 
 ## Pull requests
 

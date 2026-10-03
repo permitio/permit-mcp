@@ -25,6 +25,9 @@ repos:
         language: python
       - id: check-added-large-files
         language: python
+        # Lock files are large by design (the root's is over the 500 KB limit too),
+        # and the uv-lock hook and `uv sync --locked` check them.
+        exclude: (^|/)uv\.lock$
       - id: check-case-conflict
         language: python
       - id: check-executables-have-shebangs
@@ -90,6 +93,15 @@ repos:
         entry: uv lock --check
         language: system
         files: ^(uv\.lock|pyproject\.toml)$
+        pass_filenames: false
+      # The example's uv.lock records this package's metadata, its dependency groups
+      # included, so a change to the root pyproject.toml can make it stale too. Run
+      # `uv lock --directory examples/food-ordering-system` to fix.
+      - id: uv-lock-example
+        name: uv lock --check (examples/food-ordering-system)
+        entry: uv lock --check --directory examples/food-ordering-system
+        language: system
+        files: ^(examples/food-ordering-system/)?(uv\.lock|pyproject\.toml)$
         pass_filenames: false
 
   - repo: https://github.com/rhysd/actionlint

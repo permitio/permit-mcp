@@ -1,0 +1,89 @@
+[build-system]
+requires = ["uv_build>=0.12.19,<0.13"]
+build-backend = "uv_build"
+
+[project]
+name = "food-ordering-system"
+version = "1.0.0"
+description = "A family food-ordering chat that uses the Permit MCP tools as the signed-in user"
+readme = "README.md"
+requires-python = ">=3.11"
+license = "MIT"
+# Exact pins: an application, not a library. permit-mcp comes from this checkout
+# ([tool.uv.sources] below).
+dependencies = [
+    "aiosqlite==0.22.1",
+    "bcrypt==5.0.0",
+    "fastapi==0.141.1",
+    "google-genai==2.25.0",
+    "httpx==0.28.1",
+    "mcp==2.2.0",
+    "permit>=3.0.0,<4",
+    "permit-mcp",
+    "pydantic==2.13.5",
+    "pyjwt==2.15.0",
+    "rich==15.0.0",
+    "uvicorn==0.54.0",
+    "websockets==16.1.1",
+]
+
+[project.scripts]
+food-ordering-server = "food_ordering.app:main"
+food-ordering-seed = "food_ordering.seed:main"
+food-ordering-chat = "food_ordering.cli:main"
+
+[dependency-groups]
+# ruff and mypy at the versions the root pins; ruff reads the root's configuration.
+dev = [
+    "mypy==2.3.1",
+    "pytest==9.1.1",
+    "pytest-asyncio==1.4.0",
+    "pytest-httpserver==1.1.5",
+    "ruff==0.16.9",
+    "werkzeug==3.1.8",
+]
+
+[tool.pytest]
+asyncio_mode = "auto"
+testpaths = ["tests"]
+strict = true
+filterwarnings = [
+    "error",
+    # permit 3.0.0 subclasses its own deprecated PermitException when permit.exceptions is
+    # imported; nothing here uses PermitException.
+    "ignore:Use PermitError instead:DeprecationWarning",
+]
+
+# ruff has no section here: it reads the repository root's pyproject.toml, as prek does.
+
+[tool.mypy]
+python_version = "3.11"
+files = ["src", "tests"]
+strict = true
+warn_unreachable = true
+enable_error_code = [
+    "deprecated",
+    "exhaustive-match",
+    "ignore-without-code",
+    "mutable-override",
+    "possibly-undefined",
+    "redundant-expr",
+    "redundant-self",
+    "truthy-bool",
+    "truthy-iterable",
+    "unimported-reveal",
+    "unused-awaitable",
+]
+
+[tool.uv.build-backend]
+module-name = "food_ordering"
+
+[tool.uv]
+required-version = ">=0.12.19"
+exclude-newer = "7 days"
+# permit 3.0.0 was published on 2026-09-28; remove this once it is older than
+# 7 days (after 2026-10-05), as CONTRIBUTING.md describes.
+exclude-newer-package = { permit = false }
+
+[tool.uv.sources]
+permit-mcp = { path = "../..", editable = true }

@@ -17,6 +17,8 @@ The first release on PyPI. To upgrade from the 0.1 server, follow the
   a PEP 740 attestation signed by that workflow.
 - An API reference site, <https://permitio.github.io/permit-mcp/>, published with each release:
   the embedding API from its docstrings, and every tool's input and output schemas.
+- The food-ordering example (`examples/food-ordering-system`) runs on 1.0: its backend signs
+  the user in, and every tool, its own included, acts as that user through `bound_user`.
 
 ### API
 

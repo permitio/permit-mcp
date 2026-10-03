@@ -794,7 +794,7 @@ def gate_with_a_vulnerable_tool_tree(
     return run_step(workflow, AUDIT_GATE_STEP, tmp_path, env)
 
 
-@pytest.mark.parametrize("tool_tree", ["dev-ceiling", "docs-ceiling"])
+@pytest.mark.parametrize("tool_tree", ["dev-ceiling", "docs-ceiling", "example-ceiling"])
 @pytest.mark.parametrize("gate_dev_tree", ["true", "null"], ids=["true", "not called"])
 def test_the_audit_gates_on_the_dev_and_docs_trees_by_default(
     workflow: dict[str, Any], tmp_path: Path, gate_dev_tree: str, tool_tree: str
@@ -804,14 +804,15 @@ def test_the_audit_gates_on_the_dev_and_docs_trees_by_default(
     assert "::error title=Dependency audit::Fixable HIGH or CRITICAL" in completed.stdout
 
 
-@pytest.mark.parametrize("tool_tree", ["dev-ceiling", "docs-ceiling"])
+@pytest.mark.parametrize("tool_tree", ["dev-ceiling", "docs-ceiling", "example-ceiling"])
 def test_a_caller_can_leave_the_dev_and_docs_trees_ungated(
     workflow: dict[str, Any], tmp_path: Path, tool_tree: str
 ) -> None:
     completed = gate_with_a_vulnerable_tool_tree(workflow, tmp_path, "false", tool_tree)
     assert completed.returncode == 0, completed.stdout + completed.stderr
     assert (
-        "dev-ceiling docs-ceiling: reported in the summary but not gated (gate-dev-tree: false)."
+        "dev-ceiling docs-ceiling example-ceiling: reported in the summary but not gated"
+        " (gate-dev-tree: false)."
     ) in completed.stdout
 
 
@@ -846,7 +847,13 @@ def audit_trees(workflow: dict[str, Any]) -> list[str]:
 def test_audit_trees_are_the_trees_audit_deps_compiles(workflow: dict[str, Any]) -> None:
     compiled = re.findall(r"^compile_tree (\S+)", AUDIT_DEPS.read_text(), flags=re.MULTILINE)
     assert audit_trees(workflow) == compiled
-    assert compiled == ["runtime-ceiling", "runtime-floor", "dev-ceiling", "docs-ceiling"]
+    assert compiled == [
+        "runtime-ceiling",
+        "runtime-floor",
+        "dev-ceiling",
+        "docs-ceiling",
+        "example-ceiling",
+    ]
 
 
 def run_audit_deps_with_stand_ins(tmp_path: Path) -> tuple[subprocess.CompletedProcess[str], Path]:
@@ -864,6 +871,7 @@ def run_audit_deps_with_stand_ins(tmp_path: Path) -> tuple[subprocess.CompletedP
     }
     trees["dev"] = [*trees["ceiling"], "pytest==9.1.1"]
     trees["docs"] = [*trees["ceiling"], "zensical==0.0.65"]
+    trees["example"] = [*trees["ceiling"], "google-genai==2.25.0"]
     for name, pins in trees.items():
         (tmp_path / f"{name}.txt").write_text("\n".join([*pins, *fillers]) + "\n")
     log = tmp_path / "calls.log"
@@ -882,6 +890,7 @@ while [[ $# -gt 0 ]]; do
     -o) out=$2; shift ;;
     --resolution) [[ $2 == lowest-direct ]] && tree={tmp_path}/floor.txt; shift ;;
     --group) tree={tmp_path}/dev.txt; [[ $2 == *:docs ]] && tree={tmp_path}/docs.txt; shift ;;
+    */examples/food-ordering-system/pyproject.toml) tree={tmp_path}/example.txt ;;
   esac
   shift
 done
@@ -909,9 +918,9 @@ def test_audit_deps_compiles_each_tree_as_it_says(tmp_path: Path) -> None:
     completed, log = run_audit_deps_with_stand_ins(tmp_path)
     assert completed.returncode == 0, completed.stdout + completed.stderr
     compiles = [line for line in log.read_text().splitlines() if line.startswith("uv pip compile")]
-    assert len(compiles) == 4
-    ceiling, floor, dev, docs = compiles
-    for call in compiles:
+    assert len(compiles) == 5
+    ceiling, floor, dev, docs, example = compiles
+    for call in compiles[:4]:
         assert "--no-sources --exclude-newer false --python-version 3.11" in call
     assert "--resolution" not in ceiling
     assert "--group" not in ceiling
@@ -925,6 +934,12 @@ def test_audit_deps_compiles_each_tree_as_it_says(tmp_path: Path) -> None:
     assert docs.endswith(
         "/pyproject.toml:docs --no-sources --exclude-newer false --python-version "
         "3.11 --quiet -o " + str(tmp_path / "audit" / "docs-ceiling" / "requirements.txt")
+    )
+    # The example installs permit-mcp from this checkout, so its sources apply.
+    assert example == (
+        f"uv pip compile {REPO_ROOT}/examples/food-ordering-system/pyproject.toml"
+        " --exclude-newer false --python-version 3.11 --quiet -o "
+        + str(tmp_path / "audit" / "example-ceiling" / "requirements.txt")
     )
     assert "Every direct dependency is at its floor" in completed.stdout
 
@@ -960,7 +975,9 @@ def test_audit_deps_fails_a_floor_tree_above_the_floors(tmp_path: Path) -> None:
 
 
 @pytest.mark.parametrize(
-    ("group", "marker"), [("dev", "pytest"), ("docs", "zensical")], ids=["dev", "docs"]
+    ("group", "marker"),
+    [("dev", "pytest"), ("docs", "zensical"), ("example", "google-genai")],
+    ids=["dev", "docs", "example"],
 )
 def test_audit_deps_fails_a_group_tree_without_the_group(
     tmp_path: Path, group: str, marker: str
@@ -1001,6 +1018,11 @@ def test_a_planted_trivy_config_and_ignore_file_do_not_hide_advisories(
         '[project]\nname = "planted"\nversion = "0"\nrequires-python = ">=3.11"\n'
         'dependencies = ["aiohttp>=3.9.1,<3.9.2", "requests>=2.31.0,<2.31.1"]\n'
         '[dependency-groups]\ndev = ["pytest==9.1.1"]\ndocs = ["zensical==0.0.65"]\n'
+    )
+    (repo / "examples" / "food-ordering-system").mkdir(parents=True)
+    (repo / "examples" / "food-ordering-system" / "pyproject.toml").write_text(
+        '[project]\nname = "planted-example"\nversion = "0"\nrequires-python = ">=3.11"\n'
+        'dependencies = ["google-genai==2.25.0"]\n'
     )
     (repo / "trivy.yaml").write_text("severity:\n  - LOW\n")
     (repo / ".trivyignore").write_text("CVE-2024-23334\nCVE-2024-30251\nCVE-2025-69223\n")
@@ -2195,3 +2217,60 @@ def test_e2e_runs_against_the_project_one_at_a_time_and_is_never_cancelled(
         "group": E2E_GROUP,
         "cancel-in-progress": False,
     }
+
+
+# --- the food-ordering example --------------------------------------------------------
+
+EXAMPLE_DIRECTORY = "examples/food-ordering-system"
+
+
+def test_ci_needs_the_example_job(needed: list[str]) -> None:
+    assert "example" in needed
+
+
+def test_the_example_job_lints_type_checks_and_tests_the_example_from_its_lock(
+    workflow: dict[str, Any],
+) -> None:
+    job = workflow["jobs"]["example"]
+    assert "if" not in job
+    assert job["permissions"] == {"contents": "read"}
+    assert [step_key(step) for step in job["steps"]] == [
+        "actions/checkout",
+        "astral-sh/setup-uv",
+        "Install the example from its uv.lock",
+        "ruff",
+        "mypy",
+        "Example tests",
+        "Check that every test ran",
+    ]
+    assert all("if" not in step for step in job["steps"])
+    run = f"uv run --locked --directory {EXAMPLE_DIRECTORY}"
+
+    def command(step: str) -> str:
+        return " ".join(find_step(workflow, ("example", step))["run"].split())
+
+    assert command("Install the example from its uv.lock") == (
+        f"uv sync --locked --directory {EXAMPLE_DIRECTORY}"
+    )
+    assert command("ruff") == f"{run} ruff check . {run} ruff format --check ."
+    assert command("mypy") == f"{run} mypy"
+    assert command("Example tests") == (
+        f'{run} python -m pytest -q --junitxml="$RUNNER_TEMP/junit.xml"'
+    )
+    assert command("Check that every test ran") == (
+        "uv run --no-project --python 3.11 python .github/scripts/check_junit.py"
+        ' "$RUNNER_TEMP/junit.xml"'
+    )
+
+
+def test_the_example_s_warnings_are_errors() -> None:
+    # The example job runs pytest without -W error, which would override the example's one
+    # ignore entry; its filterwarnings must turn every other warning into an error instead.
+    example = (REPO_ROOT / EXAMPLE_DIRECTORY / "pyproject.toml").read_text()
+    assert re.search(r'filterwarnings = \[\n    "error",\n', example)
+
+
+def test_the_example_is_not_a_workspace_member() -> None:
+    # Its dependencies stay out of the root uv.lock; it has a lock of its own.
+    assert "[tool.uv.workspace]" not in (REPO_ROOT / "pyproject.toml").read_text()
+    assert (REPO_ROOT / EXAMPLE_DIRECTORY / "uv.lock").is_file()

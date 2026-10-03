@@ -108,6 +108,9 @@ ban-relative-imports = "all"
 [tool.ruff.lint.per-file-ignores]
 "src/permit_mcp/_log.py" = ["TID251"]
 "tests/**/*.py" = ["S101", "D1", "PLR2004", "TID251"]
+# The examples are projects of their own (examples/*/pyproject.toml), linted with this
+# configuration; their tests get the same allowances as this package's.
+"examples/*/tests/**/*.py" = ["S101", "D1", "PLR2004", "TID251"]
 # A command-line script run by path: printing is its interface, and it is not in a package.
 "skills/*/scripts/*.py" = ["T201", "INP001"]
 # Run by path to write the docs site's generated pages; not in a package.

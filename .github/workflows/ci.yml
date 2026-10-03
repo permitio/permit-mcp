@@ -43,7 +43,7 @@ env:
   # Where audit-deps.sh writes the trees and their Trivy reports, and the trees,
   # in the order audit-deps.sh compiles them.
   AUDIT_DIR: /tmp/audit
-  AUDIT_TREES: runtime-ceiling runtime-floor dev-ceiling docs-ceiling
+  AUDIT_TREES: runtime-ceiling runtime-floor dev-ceiling docs-ceiling example-ceiling
   # Binaries that are downloaded and checked against the line of each release's
   # checksums file for the runner's platform (fetch-binary.sh). Dependabot does
   # not update these; actionlint's version matches the prek hook's.
@@ -147,7 +147,7 @@ jobs:
       # Change EXPECTED_HOOKS when that changes.
       - name: Run hooks
         env:
-          EXPECTED_HOOKS: 20
+          EXPECTED_HOOKS: 21
         run: |
           uv run --locked --only-dev prek run --all-files --show-diff-on-failure \
             --color=never | tee "$RUNNER_TEMP/prek.txt"
@@ -430,9 +430,56 @@ jobs:
       - name: Build the docs site
         run: .github/scripts/build-docs.sh
 
+  # The food-ordering example (examples/food-ordering-system), a uv project of
+  # its own with its own uv.lock, which installs this checkout's permit-mcp:
+  # ruff with the repository root's configuration, mypy with the example's
+  # strict one, and its offline tests, then a check that no test skipped. No
+  # cache, as everywhere here.
+  example:
+    name: example
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    concurrency:
+      group: >-
+        ${{ github.workflow }}-${{ github.ref }}-example-${{
+        (github.event_name == 'schedule' || github.event_name == 'workflow_dispatch')
+        && github.run_id || 'shared' }}
+      cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7  # v10.2.0
+        with:
+          version-file: uv.lock
+          python-version: "3.13"
+          enable-cache: false
+      - name: Install the example from its uv.lock
+        run: uv sync --locked --directory examples/food-ordering-system
+      - name: ruff
+        run: |
+          uv run --locked --directory examples/food-ordering-system ruff check .
+          uv run --locked --directory examples/food-ordering-system ruff format --check .
+      - name: mypy
+        run: uv run --locked --directory examples/food-ordering-system mypy
+      # No -W error: it would override the one ignore in the example's
+      # filterwarnings, which already turns every other warning into an error.
+      - name: Example tests
+        run: >-
+          uv run --locked --directory examples/food-ordering-system
+          python -m pytest -q --junitxml="$RUNNER_TEMP/junit.xml"
+      # Exits 1 when a test skipped, and 2 when no test ran.
+      - name: Check that every test ran
+        run: >-
+          uv run --no-project --python 3.11 python .github/scripts/check_junit.py
+          "$RUNNER_TEMP/junit.xml"
+
   # Scans the dependency trees a consumer can install with Trivy
   # (.github/scripts/audit-deps.sh): the newest and the lowest runtime versions
-  # the ranges allow, resolved for Python 3.11, and the dev tree. Fails on a
+  # the ranges allow, resolved for Python 3.11, and the dev, docs and example
+  # trees. Fails on a
   # fixable HIGH or CRITICAL advisory, and when a scan did not complete. The
   # report goes to the job summary and the dependency-audit artifact; each
   # blocking advisory is also an annotation, which reaches fork pull requests.
@@ -474,7 +521,7 @@ jobs:
           read -ra trees <<<"$AUDIT_TREES"
           uv run --no-project --python 3.11 python .github/scripts/format_audit.py \
             --dir "$AUDIT_DIR" "${trees[@]}" \
-            --context "pyproject.toml dependencies, dev and docs groups, resolved for Python 3.11" \
+            --context "pyproject.toml dependencies and groups, and the example, resolved for Python 3.11" \
             >>"$GITHUB_STEP_SUMMARY"
       - name: Annotate blocking advisories
         if: ${{ !cancelled() }}
@@ -864,6 +911,7 @@ jobs:
       - dependency-review
       - docs
       - e2e
+      - example
       - gitleaks
       - mutation
       - package
@@ -884,7 +932,7 @@ jobs:
         env:
           NEEDS: ${{ toJSON(needs) }}
           EVENT: ${{ github.event_name }}
-          EXPECTED_JOBS: 11
+          EXPECTED_JOBS: 12
           ADVISORY_JOBS: e2e
           PULL_REQUEST_JOBS: dependency-review mutation
           SCHEDULED_JOBS: e2e

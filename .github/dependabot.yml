@@ -53,6 +53,35 @@ updates:
     labels:
       - "dependencies"
 
+  # The food-ordering example, a uv project of its own: its exact pins in
+  # examples/food-ordering-system/pyproject.toml and its uv.lock, with the same
+  # cooldown and groups as the package. Its permit-mcp is this checkout, which
+  # Dependabot leaves alone. ruff and mypy are pinned at the root's versions;
+  # move both pins together.
+  - package-ecosystem: "uv"
+    directory: "/examples/food-ordering-system"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+    open-pull-requests-limit: 5
+    versioning-strategy: increase
+    cooldown:
+      default-days: 7
+      semver-major-days: 14
+    groups:
+      lint-tools:
+        patterns: ["ruff", "mypy"]
+      minor-and-patch:
+        update-types: ["minor", "patch"]
+    ignore:
+      # The [build-system] bound on uv_build follows the root's, moved by hand.
+      - dependency-name: "uv_build"
+    commit-message:
+      prefix: "deps"
+      prefix-development: "deps-dev"
+    labels:
+      - "dependencies"
+
   # Hook revisions in .pre-commit-config.yaml, pinned to commits with a
   # `# frozen: vX` comment that Dependabot rewrites with the commit. The
   # `repo: local` hooks come from uv.lock, which the uv entry maintains. Only
