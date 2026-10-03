@@ -1,7 +1,7 @@
 # Permit.io Access Request MCP Server
 The Permit MCP server creates and manages access to a resource from an AI application, enabling authorized individuals and end users to request and manage access to a resource using natural language.
 
-## Features 
+## Features
 The Permit.io MCP server allows you to:
 - Create, list, and approve/deny access requests
 - Create, list, and approve/deny operation approval requests
@@ -10,7 +10,7 @@ The Permit.io MCP server allows you to:
 ## Ways You Can Use the Server?
 There are two ways the Permit MCP server can be used.
 
-1. **Locally**: 
+1. **Locally**:
 The server can be run locally by individuals with the required credentials (environment variables), allowing them to view, approve, or deny access requests from end-users within an AI assistant like Claude Desktop.
 
 2. **Hosted / Production Deployment**:
@@ -29,12 +29,12 @@ cd permit-mcp
 # Create a virtual environment, activate it, and install dependencies
 uv venv
 source .venv/bin/activate # For Windows: .venv\Scripts\activate
-uv pip install -e . 
+uv pip install -e .
 ```
 
 ## Environment Variables
-To set up the server, you need to supply the environment variables defined in the `.env.example` file. 
-Create a `.env` file in the root directory and specify the following variables: 
+To set up the server, you need to supply the environment variables defined in the `.env.example` file.
+Create a `.env` file in the root directory and specify the following variables:
 
 ```shell
 TENANT=  # default
@@ -47,7 +47,7 @@ ACCESS_ELEMENTS_CONFIG_ID=
 OPERATION_ELEMENTS_CONFIG_ID=
 ```
 
-You can use the following resources to help you do that: 
+You can use the following resources to help you do that:
 - [PERMIT_PDP_URL](https://docs.permit.io/how-to/deploy/deploy-to-production/#installing-the-pdp)
 - [PERMIT_API_KEY](https://docs.permit.io/overview/use-the-permit-api-and-sdk#obtain-your-api-key)
 - [PROJECT_ID](https://docs.permit.io/api/examples/get-project-and-env#get-project-id-or-key)
@@ -56,9 +56,9 @@ You can use the following resources to help you do that:
 - OPERATION_ELEMENTS_CONFIG_ID: The ID of the [approval management element](https://docs.permit.io/embeddable-uis/element/approval-management).
 
 ## Run the Permit MCP Server With Claude Desktop
-First, install [Claude Desktop](https://claude.ai/download). 
-Then, configure Claude to use the server with the following configurations: 
- 
+First, install [Claude Desktop](https://claude.ai/download).
+Then, configure Claude to use the server with the following configurations:
+
 ```json
 {
     "mcpServers": {
@@ -76,7 +76,7 @@ Then, configure Claude to use the server with the following configurations:
 ```
 
 ## Building Custom Server with Permit MCP Server
-The Permit MCP server provides an easy way to import and exclude its tools within your custom MCP server by using its class. 
+The Permit MCP server provides an easy way to import and exclude its tools within your custom MCP server by using its class.
 
 ```python
 from permit_mcp import PermitServer
@@ -88,7 +88,7 @@ permit_server = PermitServer(
 ```
 With this, all other tools aside from `create_access_request` and `create_operation_approval` will be available.
 
-You can find a complete implementation in the [Family Food Ordering System](https://github.com/permitio/permit-mcp/tree/main/examples/food-ordering-system). 
+You can find a complete implementation in the [Family Food Ordering System](https://github.com/permitio/permit-mcp/tree/main/examples/food-ordering-system).
 
 ## Best Practices
 

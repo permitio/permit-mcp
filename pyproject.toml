@@ -43,9 +43,13 @@ permit-mcp = "permit_mcp.server:main"
 [dependency-groups]
 # Exact pins: uv.lock is the single source of these tool versions.
 dev = [
+    "mypy==2.3.1",
+    "prek==0.5.3",
     "pytest==9.1.1",
     "pytest-asyncio==1.4.0",
     "pytest-httpserver==1.1.5",
+    "ruff==0.16.9",
+    "typos==1.50.3",
     "uv==0.12.19",
     "werkzeug==3.1.8",
 ]
@@ -55,6 +59,58 @@ asyncio_mode = "auto"
 testpaths = ["tests"]
 strict = true
 filterwarnings = ["error"]
+
+[tool.ruff]
+line-length = 100
+# prek passes file names explicitly; without this, excluded files would still be checked.
+force-exclude = true
+
+[tool.ruff.format]
+docstring-code-format = true
+
+[tool.ruff.lint]
+select = ["ALL"]
+ignore = [
+    "COM812",  # conflicts with the formatter
+    "CPY001",  # no per-file copyright headers; LICENSE covers the repository
+    "TRY003",  # messages that name the failing value are the point of these errors
+    "D100",    # module docstrings only where a module needs explaining
+    "D104",
+    "D105",
+    "D107",    # __init__ is documented in the class docstring
+]
+
+[tool.ruff.lint.pydocstyle]
+convention = "google"
+
+[tool.ruff.lint.flake8-tidy-imports]
+ban-relative-imports = "all"
+
+[tool.ruff.lint.flake8-tidy-imports.banned-api]
+"logging.getLogger".msg = "Use permit_mcp._log.get_logger, which redacts registered secrets."
+
+[tool.ruff.lint.per-file-ignores]
+"src/permit_mcp/_log.py" = ["TID251"]
+"tests/**/*.py" = ["S101", "D1", "PLR2004", "TID251"]
+
+[tool.mypy]
+python_version = "3.11"
+files = ["src", "tests"]
+strict = true
+warn_unreachable = true
+enable_error_code = [
+    "deprecated",
+    "exhaustive-match",
+    "ignore-without-code",
+    "mutable-override",
+    "possibly-undefined",
+    "redundant-expr",
+    "redundant-self",
+    "truthy-bool",
+    "truthy-iterable",
+    "unimported-reveal",
+    "unused-awaitable",
+]
 
 [tool.uv]
 # A floor, not an exact pin: Dependabot's bundled uv must still run.
