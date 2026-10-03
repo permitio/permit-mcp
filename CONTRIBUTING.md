@@ -165,9 +165,11 @@ PERMIT_E2E_PROJECT_API_KEY=permit_key_... PERMIT_E2E_PROJECT_ID=<project id or k
 ```
 
 - The key is a project-level API key with write access to the project (editor or admin).
-  Run the suite against a Permit project of your own, kept for these tests: it creates a
-  scratch environment, `mcp-e2e-<run id>`, in it, and deletes that environment, with
-  everything in it, when the run ends, after a failure too; a 404 counts as deleted.
+  Run the suite against a Permit project of your own, kept for these tests and holding
+  nothing else: it creates a scratch environment, `mcp-e2e-<run id>`, in it, and deletes that
+  environment, with everything in it, when the run ends, after a failure too; a 404 counts as
+  deleted. When that delete fails after a failure, the run still reports the first failure,
+  with the delete's error logged and added to it as a note.
 - Before it creates its own, the suite deletes every `mcp-e2e-*` environment of the project
   older than an hour: what a run killed before its teardown left behind. A run lasts well
   under an hour, so it never deletes one in use.
@@ -344,8 +346,12 @@ Done once by a repository owner, outside this repository:
   [the API reference site](#the-api-reference-site).
 - **The `e2e` environment** (Settings, Environments, new environment `e2e`): deployment
   branches set to selected ones, with the one rule `main`, and no required reviewers (a
-  reviewer would hold every weekly run, and CI and its Slack report with it). Create a Permit project kept for the end-to-end suite, and a project-level API key in
-  it with write access (editor). Add `PERMIT_E2E_PROJECT_API_KEY` (the key) and
+  reviewer would hold every weekly run, and CI and its Slack report with it). Create a Permit
+  project for the end-to-end suite that holds nothing else: before each run the suite deletes
+  every `mcp-e2e-*` environment in it older than an hour. Then create a project-level API key in
+  it with write access (editor). Anyone with write access to this repository can run CI by hand
+  on `main` (Actions, CI, Run workflow), and that run runs the suite against the project with
+  this key. Add `PERMIT_E2E_PROJECT_API_KEY` (the key) and
   `PERMIT_E2E_PROJECT_ID` (the project's ID or key) as secrets of the `e2e` environment, not as
   repository secrets. Until the secrets are set, the job fails, saying the suite did not
   run, and CI shows its advisory warning.

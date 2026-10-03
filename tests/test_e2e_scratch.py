@@ -186,6 +186,73 @@ def test_a_failed_delete_of_the_environment_fails_the_run(httpserver: HTTPServer
         pass
 
 
+LOCKED = f"DELETE {ENVS}/{ENV_ID} failed with HTTP 409: locked"
+TEST_FAILURE = "the test failed"
+
+
+def test_a_failed_delete_after_a_failed_setup_keeps_the_setup_s_error(
+    httpserver: HTTPServer, caplog: pytest.LogCaptureFixture
+) -> None:
+    httpserver.expect_request(re.compile(".*/users"), method="POST").respond_with_data(
+        "rejected", status=500
+    )
+    httpserver.expect_request(f"{ENVS}/{ENV_ID}", method="DELETE").respond_with_data(
+        "locked", status=409
+    )
+    serve(httpserver)
+    with (
+        pytest.raises(PermitAdminError) as caught,
+        scratch_world(project(httpserver), PROJECT, RUN, lambda _key: None),
+    ):
+        pytest.fail("the block must not run when the setup failed")
+    assert str(caught.value) == "POST /v2/facts/proj/env-id/users failed with HTTP 500: rejected"
+    assert caught.value.__notes__ == [
+        f"Deleting the scratch environment mcp-e2e-{RUN} failed too: {LOCKED}"
+    ]
+    assert sent(httpserver)[-1] == DELETE_OURS
+    [record] = [record for record in caplog.records if record.levelname == "ERROR"]
+    assert record.getMessage() == (
+        f"Could not delete the scratch environment mcp-e2e-{RUN} after a failure; the next"
+        f" run's sweep deletes it once it is an hour old: {LOCKED}"
+    )
+
+
+def test_a_failed_delete_after_a_failed_test_keeps_the_test_s_failure(
+    httpserver: HTTPServer, caplog: pytest.LogCaptureFixture
+) -> None:
+    httpserver.expect_request(f"{ENVS}/{ENV_ID}", method="DELETE").respond_with_data(
+        "locked", status=409
+    )
+    serve(httpserver)
+    with (
+        pytest.raises(AssertionError) as caught,
+        scratch_world(project(httpserver), PROJECT, RUN, lambda _key: None),
+    ):
+        raise AssertionError(TEST_FAILURE)
+    assert str(caught.value) == TEST_FAILURE
+    assert caught.value.__notes__ == [
+        f"Deleting the scratch environment mcp-e2e-{RUN} failed too: {LOCKED}"
+    ]
+    assert caught.value.__cause__ is None
+    assert sent(httpserver)[-1] == DELETE_OURS
+    assert LOCKED in caplog.text
+
+
+def test_a_failed_test_whose_environment_is_deleted_carries_no_note(
+    httpserver: HTTPServer, caplog: pytest.LogCaptureFixture
+) -> None:
+    serve(httpserver)
+    with (
+        pytest.raises(AssertionError) as caught,
+        scratch_world(project(httpserver), PROJECT, RUN, lambda _key: None),
+    ):
+        raise AssertionError(TEST_FAILURE)
+    assert str(caught.value) == TEST_FAILURE
+    assert not hasattr(caught.value, "__notes__")
+    assert sent(httpserver)[-1] == DELETE_OURS
+    assert [record for record in caplog.records if record.levelname == "ERROR"] == []
+
+
 def test_the_sweep_reports_every_failed_delete_and_creates_nothing(
     httpserver: HTTPServer,
 ) -> None:

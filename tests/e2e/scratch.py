@@ -6,7 +6,9 @@ left behind. CI runs one e2e job at a time and a job stops within 15 minutes, so
 environment that old belongs to no live run; one an hour old or younger may be a developer's
 run in progress, and is left alone. Then it creates this run's environment, registers its
 delete, and fills it. When the block ends, whatever happened inside, it deletes the
-environment, and every object in it with it. A 404 counts as deleted.
+environment, and every object in it with it. A 404 counts as deleted. When the block failed
+and the delete fails too, the block's failure is still the error raised; the delete's error is
+logged and added to it as a note.
 
 The world holds two access-request setups and one operation-approval setup:
 
@@ -43,7 +45,7 @@ from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING, Any, Protocol, TypeVar
 
 from permit_mcp import Settings
-from permit_mcp._log import redact, scrub
+from permit_mcp._log import get_logger, redact, scrub
 from tests.support import text_of
 
 if TYPE_CHECKING:
@@ -54,6 +56,7 @@ if TYPE_CHECKING:
     from mcp.types import CallToolResult
 
 _T = TypeVar("_T")
+_LOG = get_logger(__name__)
 # A JSON value as the API returns it; the tests index into it.
 Json = Any
 
@@ -201,10 +204,13 @@ class AdminClient:
                 status = response.status
                 text = response.read().decode("utf-8", errors="replace")
         except urllib.error.HTTPError as error:
-            detail = error.read().decode("utf-8", errors="replace")
-            if error.code == TOO_MANY_REQUESTS:
-                raise _RateLimitedError(retry_after(error.headers.get("Retry-After"))) from error
-            raise PermitAdminError(method, path, error.code, detail) from error
+            # An HTTPError holds the open response; closed here, not left to the collector.
+            with error:
+                detail = error.read().decode("utf-8", errors="replace")
+                if error.code == TOO_MANY_REQUESTS:
+                    wait = retry_after(error.headers.get("Retry-After"))
+                    raise _RateLimitedError(wait) from error
+                raise PermitAdminError(method, path, error.code, detail) from error
         except (urllib.error.URLError, TimeoutError) as error:
             raise PermitAdminError(method, path, None, str(error)) from error
         if not text.strip():
@@ -384,7 +390,9 @@ def scratch_world(
 
     Raises:
         SweepError: A leftover environment could not be deleted; nothing was created.
-        PermitAdminError: A setup request, or the environment's delete, failed.
+        PermitAdminError: A setup request, or the environment's delete, failed. When the
+            block failed and the delete failed too, the block's error is raised, with the
+            delete's error logged and added to it as a note.
 
     """
     sweep(project, project_id)
@@ -399,10 +407,35 @@ def scratch_world(
         },
     )
     environment_id = str(created["id"])
+    environment_path = f"/v2/projects/{project_id}/envs/{environment_id}"
     try:
         yield _fill(project, project_id, environment_id, run_id, on_env_key)
-    finally:
-        project.delete(f"/v2/projects/{project_id}/envs/{environment_id}")
+    except BaseException as failure:
+        _delete_after_failure(project, environment_path, environment_key, failure)
+        raise
+    project.delete(environment_path)
+
+
+def _delete_after_failure(
+    project: AdminClient, environment_path: str, environment_key: str, failure: BaseException
+) -> None:
+    """Delete the environment after `failure`, which stays the error the run reports.
+
+    A failed delete is logged, and added to `failure` as a note, rather than raised in its
+    place: the test failure is what the run must show.
+    """
+    try:
+        project.delete(environment_path)
+    except PermitAdminError as delete_error:
+        _LOG.error(
+            "Could not delete the scratch environment %s after a failure; the next run's sweep"
+            " deletes it once it is an hour old: %s",
+            environment_key,
+            delete_error,
+        )
+        failure.add_note(
+            f"Deleting the scratch environment {environment_key} failed too: {delete_error}"
+        )
 
 
 def _fill(
