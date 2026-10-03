@@ -1,9 +1,9 @@
-"""The MCP tools for Permit access requests and operation approvals.
+"""The MCP tools for Permit access requests, operation approvals and permission checks.
 
 No tool takes a user argument. Every call asks the server's identity resolver for the
 caller's Permit user, and fails before any Permit request when there is none. The
-access-request and operation-approval tools act as that user; list_resource_instances lists
-with the server's credentials.
+access-request and operation-approval tools act as that user, check_permission asks the PDP
+about that user, and list_resource_instances lists with the server's credentials.
 """
 
 import json
@@ -26,20 +26,24 @@ logger = get_logger(__name__)
 _T = TypeVar("_T")
 
 LIST_RESOURCE_INSTANCES = "list_resource_instances"
+CHECK_PERMISSION = "check_permission"
 ACCESS_REQUEST_TOOLS = (
     "create_access_request",
     "list_access_requests",
     "approve_access_request",
     "deny_access_request",
+    "cancel_access_request",
 )
 OPERATION_APPROVAL_TOOLS = (
     "create_operation_approval",
     "list_operation_approvals",
     "approve_operation_approval",
     "deny_operation_approval",
+    "cancel_operation_approval",
 )
 TOOL_NAMES: tuple[str, ...] = (
     LIST_RESOURCE_INSTANCES,
+    CHECK_PERMISSION,
     *ACCESS_REQUEST_TOOLS,
     *OPERATION_APPROVAL_TOOLS,
 )
@@ -90,8 +94,9 @@ class PermitTools:
     """The Permit tools, ready to register on an `MCPServer`.
 
     Every tool asks `identity` who the caller is; the access-request and operation-approval
-    tools act in Permit as that user. All calls share one `PermitApi` and so one HTTP session,
-    which `aclose()` closes. One instance belongs to one event loop.
+    tools act in Permit as that user, and check_permission asks the PDP about that user. All
+    calls, to the API and to the PDP, share one `PermitApi` and so one HTTP session, which
+    `aclose()` closes. One instance belongs to one event loop.
     """
 
     def __init__(self, settings: Settings, identity: IdentityResolver) -> None:
@@ -111,6 +116,8 @@ class PermitTools:
 
         The access-request tools are registered only when `access_request_element` is set,
         and the operation-approval tools only when `operation_approval_element` is set.
+        list_resource_instances and check_permission need no element and are always
+        registered.
 
         Args:
             server: The server to register on, such as one a host application built.
@@ -130,7 +137,7 @@ class PermitTools:
                 f"Valid names: {', '.join(TOOL_NAMES)}."
             )
             raise ValueError(msg)
-        available = {LIST_RESOURCE_INSTANCES}
+        available = {LIST_RESOURCE_INSTANCES, CHECK_PERMISSION}
         if self._settings.access_request_element is not None:
             available.update(ACCESS_REQUEST_TOOLS)
         if self._settings.operation_approval_element is not None:
@@ -168,6 +175,17 @@ class PermitTools:
                 ),
                 _READ,
             ),
+            CHECK_PERMISSION: (
+                self._check_permission,
+                (
+                    "Ask Permit whether the acting user may perform action on "
+                    f"{target}, or on one instance of it (the instance key, not the ID). "
+                    "Returns allowed: true or false. On the cloud PDP, RBAC and ReBAC policies "
+                    "are evaluated; a permission that only an ABAC policy grants comes back "
+                    "false. Asks as the caller's Permit user."
+                ),
+                _READ,
+            ),
             "create_access_request": (
                 self._create_access_request,
                 (
@@ -198,6 +216,14 @@ class PermitTools:
                 (
                     "Deny an access request. Permit refuses when the acting user may not "
                     f"review access requests. {acting}"
+                ),
+                _WRITE,
+            ),
+            "cancel_access_request": (
+                self._cancel_access_request,
+                (
+                    "Cancel an access request. Withdraws a pending request the acting user "
+                    f"filed; Permit refuses otherwise. {acting}"
                 ),
                 _WRITE,
             ),
@@ -234,6 +260,14 @@ class PermitTools:
                 ),
                 _WRITE,
             ),
+            "cancel_operation_approval": (
+                self._cancel_operation_approval,
+                (
+                    "Cancel an operation approval request. Withdraws a pending request the "
+                    f"acting user filed; Permit refuses otherwise. {acting}"
+                ),
+                _WRITE,
+            ),
         }
 
     async def _list_resource_instances(
@@ -249,6 +283,30 @@ class PermitTools:
             content=[TextContent(type="text", text=json.dumps(instances, indent=2))],
             structured_content={"result": instances},
         )
+
+    async def _check_permission(
+        self,
+        ctx: Context[Any, Any],
+        *,
+        action: Annotated[
+            str, Field(min_length=1, description="Key of the action, such as read or edit.")
+        ],
+        resource_instance: Annotated[
+            str | None,
+            Field(
+                min_length=1,
+                description=(
+                    "Instance key (not the ID). Optional; without it the check is on the "
+                    "resource type."
+                ),
+            ),
+        ] = None,
+    ) -> dict[str, bool]:
+        user = await self._acting_user(ctx)
+        allowed = await _translate(
+            self._api.check_permission(user, action=action, resource_instance=resource_instance)
+        )
+        return {"allowed": allowed}
 
     async def _create_access_request(
         self,
@@ -328,6 +386,13 @@ class PermitTools:
         )
         return {"status": "denied", "access_request": decided}
 
+    async def _cancel_access_request(
+        self, ctx: Context[Any, Any], *, access_request_id: AccessRequestId
+    ) -> dict[str, Any]:
+        user = await self._acting_user(ctx)
+        canceled = await _translate(self._api.cancel_access_request(user, access_request_id))
+        return {"status": "canceled", "access_request": canceled}
+
     async def _create_operation_approval(
         self,
         ctx: Context[Any, Any],
@@ -399,6 +464,15 @@ class PermitTools:
             )
         )
         return {"status": "denied", "operation_approval": decided}
+
+    async def _cancel_operation_approval(
+        self, ctx: Context[Any, Any], *, operation_approval_id: OperationApprovalId
+    ) -> dict[str, Any]:
+        user = await self._acting_user(ctx)
+        canceled = await _translate(
+            self._api.cancel_operation_approval(user, operation_approval_id)
+        )
+        return {"status": "canceled", "operation_approval": canceled}
 
     async def _acting_user(self, ctx: Context[Any, Any]) -> str:
         """Return the Permit user key of the caller, or fail before anything is sent.

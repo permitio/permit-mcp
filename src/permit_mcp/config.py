@@ -11,12 +11,14 @@ from permit_mcp._log import get_logger, redact
 logger = get_logger(__name__)
 
 DEFAULT_API_URL = "https://api.permit.io"
+DEFAULT_PDP_URL = "https://cloudpdp.api.permit.io"
 
 ENV_VARS: Mapping[str, str] = {
     "api_key": "PERMIT_API_KEY",
     "resource": "PERMIT_RESOURCE",
     "tenant": "PERMIT_TENANT",
     "api_url": "PERMIT_API_URL",
+    "pdp_url": "PERMIT_PDP_URL",
     "access_request_element": "PERMIT_ACCESS_REQUEST_ELEMENT",
     "operation_approval_element": "PERMIT_OPERATION_APPROVAL_ELEMENT",
     "user": "PERMIT_MCP_USER",
@@ -56,6 +58,8 @@ class Settings:
             (`PERMIT_RESOURCE`).
         tenant: Key of the tenant the tools work in (`PERMIT_TENANT`).
         api_url: Base URL of the Permit API (`PERMIT_API_URL`).
+        pdp_url: Base URL of the Permit PDP that answers permission checks
+            (`PERMIT_PDP_URL`): the cloud PDP by default, or a container PDP.
         access_request_element: ID or key of the User Management element whose access
             requests the access-request tools manage (`PERMIT_ACCESS_REQUEST_ELEMENT`).
             When unset, those tools are not registered.
@@ -71,6 +75,7 @@ class Settings:
     resource: str
     tenant: str = "default"
     api_url: str = DEFAULT_API_URL
+    pdp_url: str = DEFAULT_PDP_URL
     access_request_element: str | None = None
     operation_approval_element: str | None = None
     user: str | None = None
@@ -96,7 +101,8 @@ class Settings:
                     "unset (None)."
                 )
                 raise ConfigError(msg)
-        object.__setattr__(self, "api_url", _validate_url("api_url", self.api_url))
+        object.__setattr__(self, "api_url", _validate_url("api_url", self.api_url, DEFAULT_API_URL))
+        object.__setattr__(self, "pdp_url", _validate_url("pdp_url", self.pdp_url, DEFAULT_PDP_URL))
         if self.access_request_element is None and self.operation_approval_element is None:
             msg = (
                 f"Neither {ENV_VARS['access_request_element']} nor "
@@ -157,7 +163,7 @@ def _describe(name: str) -> str:
     return f"{name} ({ENV_VARS[name]})"
 
 
-def _validate_url(name: str, value: str) -> str:
+def _validate_url(name: str, value: str, example: str) -> str:
     """Return `value` without surrounding whitespace and trailing slashes.
 
     Raises:
@@ -168,7 +174,7 @@ def _validate_url(name: str, value: str) -> str:
     """
     parsed = urllib.parse.urlsplit(value.strip())
     if parsed.scheme not in {"http", "https"} or not parsed.hostname:
-        problem = f"is not an absolute http or https URL such as {DEFAULT_API_URL}"
+        problem = f"is not an absolute http or https URL such as {example}"
     elif "@" in parsed.netloc:
         problem = "contains credentials (user:password@); remove them"
     elif parsed.query or parsed.fragment:

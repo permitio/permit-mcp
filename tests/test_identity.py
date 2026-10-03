@@ -18,8 +18,12 @@ from werkzeug import Response
 from permit_mcp import IdentityError, access_token_subject, bound_user
 from tests.support import (
     CASES,
+    ELEMENT_AUTH,
     LOGIN_PATH,
     LOGIN_RESPONSE,
+    USER,
+    Call,
+    Case,
     access_requests_path,
     call_tool,
     connected,
@@ -29,6 +33,7 @@ from tests.support import (
     recorded,
     serve_case,
     serve_json,
+    server_of,
     wire_text,
 )
 
@@ -42,14 +47,17 @@ if TYPE_CHECKING:
 
 ARGUMENTS_BY_TOOL = {
     "list_resource_instances": {"page", "per_page"},
+    "check_permission": {"action", "resource_instance"},
     "create_access_request": {"role", "reason", "resource_instance"},
     "list_access_requests": {"status", "role", "resource_instance", "page", "per_page"},
     "approve_access_request": {"access_request_id", "reviewer_comment"},
     "deny_access_request": {"access_request_id", "reviewer_comment"},
+    "cancel_access_request": {"access_request_id"},
     "create_operation_approval": {"reason", "resource_instance"},
     "list_operation_approvals": {"status", "resource_instance", "page", "per_page"},
     "approve_operation_approval": {"operation_approval_id", "reviewer_comment"},
     "deny_operation_approval": {"operation_approval_id", "reviewer_comment"},
+    "cancel_operation_approval": {"operation_approval_id"},
 }
 IDENTITY_WORDS = (
     "user",
@@ -133,10 +141,11 @@ async def test_no_tool_accepts_an_acting_user(settings: Settings) -> None:
 
 @pytest.mark.parametrize("name", sorted(CASES))
 async def test_injected_user_argument_never_reaches_the_api(
-    api: HTTPServer, settings: Settings, name: str
+    api: HTTPServer, pdp: HTTPServer, settings: Settings, name: str
 ) -> None:
     case = CASES[name]
-    serve_case(api, case)
+    target = server_of(case, api, pdp)
+    serve_case(target, case)
     arguments = {
         **case.arguments,
         "user_id": INJECTED,
@@ -147,25 +156,27 @@ async def test_injected_user_argument_never_reaches_the_api(
     result = await call_tool(settings, name, arguments)
 
     assert INJECTED not in wire_text(api)
+    assert INJECTED not in wire_text(pdp)
     if result.is_error:
-        assert recorded(api) == []
+        assert recorded(api) == recorded(pdp) == []
     else:
         assert payload(result) == case.expected
-        assert recorded(api) == list(case.calls)
+        assert recorded(target) == list(case.calls)
 
 
 @pytest.mark.parametrize("resolver_id", sorted(FAILING_RESOLVERS))
 @pytest.mark.parametrize("name", sorted(CASES))
 async def test_unidentified_caller_fails_closed_without_any_request(
-    api: HTTPServer, settings: Settings, name: str, resolver_id: str
+    api: HTTPServer, pdp: HTTPServer, settings: Settings, name: str, resolver_id: str
 ) -> None:
     case = CASES[name]
-    serve_case(api, case)
+    serve_case(server_of(case, api, pdp), case)
 
     result = await call_tool(settings, name, case.arguments, FAILING_RESOLVERS[resolver_id])
 
     assert "identif" in error_text(result).lower()
     assert api.log == []
+    assert pdp.log == []
 
 
 async def test_bound_user_returns_its_key() -> None:
@@ -209,23 +220,37 @@ async def test_tools_act_as_the_token_subject(api: HTTPServer, settings: Setting
     assert recorded(api) == [listing]
 
 
-async def test_operation_approvals_log_in_as_the_token_subject(
-    api: HTTPServer, settings: Settings
+@pytest.mark.parametrize("name", ["create_operation_approval", "cancel_access_request"])
+async def test_elements_calls_log_in_as_the_token_subject(
+    api: HTTPServer, settings: Settings, name: str
 ) -> None:
-    case = CASES["create_operation_approval"]
+    case = CASES[name]
     serve_json(api, login_call("bob"), LOGIN_RESPONSE)
     serve_json(api, case.calls[-1], case.response)
 
     with signed_in("bob"):
-        result = await call_tool(
-            settings,
-            "create_operation_approval",
-            case.arguments,
-            access_token_subject(),
-        )
+        result = await call_tool(settings, name, case.arguments, access_token_subject())
 
     assert payload(result) == case.expected
     assert recorded(api) == [login_call("bob"), case.calls[-1]]
+
+
+async def test_permission_check_asks_about_the_token_subject(
+    api: HTTPServer, pdp: HTTPServer, settings: Settings
+) -> None:
+    case = CASES["check_permission"]
+    check = case.calls[-1]
+    check = replace(check, body={**check.body, "user": {"key": "bob"}})
+    serve_json(pdp, check, case.response)
+
+    with signed_in("bob"):
+        result = await call_tool(
+            settings, "check_permission", case.arguments, access_token_subject()
+        )
+
+    assert payload(result) == case.expected
+    assert recorded(pdp) == [check]
+    assert api.log == []
 
 
 async def test_tools_without_a_token_fail_closed(api: HTTPServer, settings: Settings) -> None:
@@ -258,63 +283,84 @@ def login_per_user(request: Request) -> Response:
     return Response(json.dumps(login), mimetype="application/json")
 
 
-def serve_per_user(api: HTTPServer, users: tuple[str, ...]) -> None:
-    """Serve create_access_request for each user, and operation approvals with per-user logins."""
-    for user in users:
-        serve_json(
-            api,
-            replace(CASES["create_access_request"].calls[-1], path=access_requests_path(user)),
-            {},
-        )
-    api.expect_request(LOGIN_PATH, method="POST").respond_with_handler(login_per_user)
-    serve_json(api, CASES["create_operation_approval"].calls[-1], {})
+def as_user(call: Call, user: str) -> Call:
+    """Return `call` as a tool sends it when acting as `user` instead of USER.
 
-
-async def test_each_call_acts_as_the_user_resolved_for_it(
-    api: HTTPServer, settings: Settings
-) -> None:
-    serve_per_user(api, ("alice", "bob"))
-    access, operation = CASES["create_access_request"], CASES["create_operation_approval"]
-    elements_call = operation.calls[-1]
-
-    async with connected(settings, InTurn("alice", "bob", "alice", "bob")) as client:
-        for _ in range(2):
-            payload(await client.call_tool("create_access_request", access.arguments))
-        for _ in range(2):
-            payload(await client.call_tool("create_operation_approval", operation.arguments))
-
-    assert recorded(api) == [
-        replace(access.calls[-1], path=access_requests_path("alice")),
-        replace(access.calls[-1], path=access_requests_path("bob")),
-        login_call("alice"),
-        replace(elements_call, authorization="Bearer token-of-alice"),
-        login_call("bob"),
-        replace(elements_call, authorization="Bearer token-of-bob"),
-    ]
-
-
-async def test_concurrent_calls_act_as_their_own_users(api: HTTPServer, settings: Settings) -> None:
-    serve_per_user(api, ("alice", "bob"))
-    access, operation = CASES["create_access_request"], CASES["create_operation_approval"]
-
-    async with connected(settings, InTurn("alice", "bob", "alice", "bob")) as client:
-        first = await asyncio.gather(
-            *(client.call_tool("create_access_request", access.arguments) for _ in range(2))
-        )
-        second = await asyncio.gather(
-            *(client.call_tool("create_operation_approval", operation.arguments) for _ in range(2))
-        )
-
-    for result in (*first, *second):
-        payload(result)
-    calls = recorded(api)
-    assert sorted(call.path for call in calls[:2]) == sorted(
-        [access_requests_path("alice"), access_requests_path("bob")]
+    The user is in the login_as body, the access-request path, the Elements token the
+    login returns (see `login_per_user`), and the PDP body.
+    """
+    if call.path == LOGIN_PATH:
+        return login_call(user)
+    path = call.path.replace(access_requests_path(USER), access_requests_path(user))
+    authorization = (
+        f"Bearer token-of-{user}" if call.authorization == ELEMENT_AUTH else call.authorization
     )
-    logins = [call for call in calls[2:] if call.path == LOGIN_PATH]
-    elements = [call for call in calls[2:] if call.path != LOGIN_PATH]
-    assert sorted(call.body["user_id"] for call in logins) == ["alice", "bob"]
-    assert sorted(call.authorization for call in elements) == [
-        "Bearer token-of-alice",
-        "Bearer token-of-bob",
-    ]
+    body = call.body
+    if isinstance(body, dict) and body.get("user") == {"key": USER}:
+        body = {**body, "user": {"key": user}}
+    return replace(call, path=path, authorization=authorization, body=body)
+
+
+def calls_as(case: Case, user: str) -> list[Call]:
+    """Return the requests the case's tool sends when acting as `user`."""
+    return [as_user(call, user) for call in case.calls]
+
+
+def serve_as_users(api: HTTPServer, pdp: HTTPServer, case: Case, users: tuple[str, ...]) -> None:
+    """Serve the case for each of `users`, with logins that hand out per-user tokens."""
+    api.expect_request(LOGIN_PATH, method="POST").respond_with_handler(login_per_user)
+    for user in users:
+        for call in calls_as(case, user):
+            if call.path != LOGIN_PATH:
+                serve_json(server_of(case, api, pdp), call, case.response)
+
+
+@pytest.mark.parametrize("name", sorted(CASES))
+async def test_each_call_acts_as_the_user_resolved_for_it(
+    api: HTTPServer, pdp: HTTPServer, settings: Settings, name: str
+) -> None:
+    case = CASES[name]
+    users = ("alice", "bob", "alice", "bob")
+    serve_as_users(api, pdp, case, users)
+
+    async with connected(settings, InTurn(*users)) as client:
+        for _ in users:
+            assert payload(await client.call_tool(name, case.arguments)) == case.expected
+
+    expected = [call for user in users for call in calls_as(case, user)]
+    assert recorded(server_of(case, api, pdp)) == expected
+
+
+@pytest.mark.parametrize("name", sorted(CASES))
+async def test_concurrent_calls_act_as_their_own_users(
+    api: HTTPServer, pdp: HTTPServer, settings: Settings, name: str
+) -> None:
+    case = CASES[name]
+    users = ("alice", "bob", "carol")
+    serve_as_users(api, pdp, case, users)
+
+    async with connected(settings, InTurn(*users)) as client:
+        results = await asyncio.gather(*(client.call_tool(name, case.arguments) for _ in users))
+
+    for result in results:
+        assert payload(result) == case.expected
+    expected = [call for user in users for call in calls_as(case, user)]
+    sent = recorded(server_of(case, api, pdp))
+    assert sorted(map(repr, sent)) == sorted(map(repr, expected))
+
+
+@pytest.mark.parametrize("name", sorted(CASES))
+async def test_the_resolver_wins_over_the_configured_user(
+    api: HTTPServer, pdp: HTTPServer, settings: Settings, name: str
+) -> None:
+    case = CASES[name]
+    serve_as_users(api, pdp, case, ("bob",))
+
+    result = await call_tool(
+        replace(settings, user="carol"), name, case.arguments, FixedResult("bob")
+    )
+
+    assert payload(result) == case.expected
+    assert recorded(server_of(case, api, pdp)) == calls_as(case, "bob")
+    assert "carol" not in wire_text(api)
+    assert "carol" not in wire_text(pdp)

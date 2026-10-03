@@ -13,7 +13,15 @@ from werkzeug import Response
 
 from permit_mcp import PermitTools, bound_user, create_server
 from tests.keepalive import KeepAliveServer
-from tests.support import FACTS, SCOPE, SCOPE_PATH, connected, payload, settings_for
+from tests.support import (
+    FACTS,
+    PDP_PATH,
+    SCOPE,
+    SCOPE_PATH,
+    connected,
+    payload,
+    settings_for,
+)
 
 if TYPE_CHECKING:
     from pytest_httpserver import HTTPServer
@@ -40,6 +48,26 @@ async def test_tool_calls_share_one_connection() -> None:
             ("GET", SCOPE_PATH),
             ("GET", f"{FACTS}/resource_instances"),
             ("GET", f"{FACTS}/resource_instances"),
+            ("GET", f"{FACTS}/resource_instances"),
+        ]
+        assert permit.connections == 1
+
+
+async def test_api_and_pdp_calls_share_one_session() -> None:
+    routes = {**ROUTES, ("POST", PDP_PATH): {"allow": True}}
+    async with KeepAliveServer(routes) as permit:
+        settings = settings_for(permit.url, pdp_url=permit.url)
+        async with connected(settings) as client:
+            listed = await client.call_tool("list_resource_instances", {})
+            checked = await client.call_tool("check_permission", {"action": "read"})
+            again = await client.call_tool("list_resource_instances", {})
+
+        assert payload(listed) == payload(again) == INSTANCES
+        assert payload(checked) == {"allowed": True}
+        assert permit.requests == [
+            ("GET", SCOPE_PATH),
+            ("GET", f"{FACTS}/resource_instances"),
+            ("POST", PDP_PATH),
             ("GET", f"{FACTS}/resource_instances"),
         ]
         assert permit.connections == 1

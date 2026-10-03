@@ -1,8 +1,8 @@
 """Constants and helpers shared by the offline test suite.
 
-The Permit API is a local pytest-httpserver instance. Every helper here works on what crossed
-the wire (method, raw path, query, JSON body, Authorization header) or on what an MCP client
-received, never on the package's internals.
+The Permit API and the PDP are local pytest-httpserver instances. Every helper here works on
+what crossed the wire (method, raw path, query, JSON body, Authorization header) or on what an
+MCP client received, never on the package's internals.
 """
 
 from __future__ import annotations
@@ -51,6 +51,9 @@ LOGIN_RESPONSE: dict[str, Any] = {
     "extra": None,
 }
 OA_PATH = f"/v2/elements/proj-id/env-id/config/{OA_ELEMENT}/operation_approval"
+AR_ELEMENTS_PATH = f"/v2/elements/proj-id/env-id/config/{AR_ELEMENT}/access_requests"
+PDP_PATH = "/allowed"
+UNUSED_PDP_URL = "http://127.0.0.1:9"
 API_AUTH = f"Bearer {API_KEY}"
 ELEMENT_AUTH = f"Bearer {ELEMENT_TOKEN}"
 
@@ -79,16 +82,21 @@ class Call:
 def settings_for(
     api_url: str,
     *,
+    pdp_url: str | None = None,
     user: str | None = None,
     access_request_element: str | None = AR_ELEMENT,
     operation_approval_element: str | None = OA_ELEMENT,
 ) -> Settings:
-    """Build Settings that point every URL at local servers."""
+    """Build Settings that point every URL at local servers.
+
+    Without `pdp_url` the PDP is an unused local port, so a stray check fails to connect.
+    """
     return Settings(
         api_key=API_KEY,
         resource=RESOURCE,
         tenant=TENANT,
         api_url=api_url,
+        pdp_url=UNUSED_PDP_URL if pdp_url is None else pdp_url,
         access_request_element=access_request_element,
         operation_approval_element=operation_approval_element,
         user=user,
@@ -211,14 +219,22 @@ ENVELOPE_ITEMS = [{"id": AR_ID, "status": "pending"}]
 class Case:
     """One tool call: its arguments, the requests it must send, and what it must return.
 
-    For operation-approval tools `calls` starts with the elements login_as request, which
-    the mock answers with LOGIN_RESPONSE; the last call is answered with `response`.
+    For the tools that use an Elements token (the operation-approval tools and
+    cancel_access_request) `calls` starts with the elements login_as request, which
+    the mock answers with LOGIN_RESPONSE; the last call is answered with `response`. When
+    `pdp` is True the calls go to the mock PDP, and nothing may reach the mock API.
     """
 
     arguments: dict[str, Any]
     calls: tuple[Call, ...]
     response: Any
     expected: Any
+    pdp: bool = False
+
+
+def server_of(case: Case, api: HTTPServer, pdp: HTTPServer) -> HTTPServer:
+    """Return the mock that the case's calls go to."""
+    return pdp if case.pdp else api
 
 
 CASES: dict[str, Case] = {
@@ -238,6 +254,24 @@ CASES: dict[str, Case] = {
         ),
         response={"data": [{"key": "doc-1", "resource": RESOURCE}], "total_count": 1},
         expected={"data": [{"key": "doc-1", "resource": RESOURCE}], "total_count": 1},
+    ),
+    "check_permission": Case(
+        arguments={"action": "edit", "resource_instance": "doc-1"},
+        calls=(
+            Call(
+                "POST",
+                PDP_PATH,
+                body={
+                    "user": {"key": USER},
+                    "action": "edit",
+                    "resource": {"type": RESOURCE, "tenant": TENANT, "key": "doc-1"},
+                    "context": {},
+                },
+            ),
+        ),
+        response={"allow": True, "result": True, "query": {}, "debug": {}},
+        expected={"allowed": True},
+        pdp=True,
     ),
     "create_access_request": Case(
         arguments={
@@ -310,6 +344,18 @@ CASES: dict[str, Case] = {
         expected={
             "status": "denied",
             "access_request": {**ACCESS_REQUEST, "status": "denied"},
+        },
+    ),
+    "cancel_access_request": Case(
+        arguments={"access_request_id": AR_ID},
+        calls=(
+            login_call(),
+            Call("PUT", f"{AR_ELEMENTS_PATH}/{AR_ID}/cancel", authorization=ELEMENT_AUTH),
+        ),
+        response={**ACCESS_REQUEST, "status": "canceled"},
+        expected={
+            "status": "canceled",
+            "access_request": {**ACCESS_REQUEST, "status": "canceled"},
         },
     ),
     "create_operation_approval": Case(
@@ -392,10 +438,24 @@ CASES: dict[str, Case] = {
             "operation_approval": {**OPERATION_APPROVAL, "status": "denied"},
         },
     ),
+    "cancel_operation_approval": Case(
+        arguments={"operation_approval_id": OA_ID},
+        calls=(
+            login_call(),
+            Call("PUT", f"{OA_PATH}/{OA_ID}/cancel", authorization=ELEMENT_AUTH),
+        ),
+        response={**OPERATION_APPROVAL, "status": "canceled"},
+        expected={
+            "status": "canceled",
+            "operation_approval": {**OPERATION_APPROVAL, "status": "canceled"},
+        },
+    ),
 }
 
-OPERATION_TOOLS = sorted(name for name in CASES if "operation_approval" in name)
+ELEMENTS_TOKEN_TOOLS = sorted(name for name, case in CASES.items() if case.calls[0] == login_call())
 APPROVE_DENY_TOOLS = sorted(name for name in CASES if name.startswith(("approve_", "deny_")))
+# The tools that take the ID of one request.
+BY_ID_TOOLS = sorted(name for name in CASES if name.startswith(("approve_", "deny_", "cancel_")))
 
 
 def serve_case(api: HTTPServer, case: Case, *, status: int = 200, response: object = None) -> None:

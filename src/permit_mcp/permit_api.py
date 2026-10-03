@@ -1,11 +1,13 @@
-"""The Permit API calls the tools make. The only module that sends HTTP requests.
+"""The Permit API and PDP calls the tools make. The only module that sends HTTP requests.
 
 The access-request and operation-approval calls both act with the permissions of the acting
-user. The access-request calls name that user in the request path, and Permit applies the
-user's Elements permissions: a reviewer must be allowed to review, and nobody approves their
-own request. The operation-approval calls first log in to Elements as that user and send the
-Elements token the login returns. Listing resource instances and looking up the requesting
-users of a listing use the server's API key.
+user. The access-request calls other than cancel name that user in the request path, and
+Permit applies the user's Elements permissions: a reviewer must be allowed to review, and
+nobody approves their own request. Cancelling an access request and the operation-approval
+calls first log in to Elements as that user and send the Elements token the login returns.
+Listing resource instances and looking up the requesting users of a listing use the
+server's API key. The permission check asks the PDP about the acting user, and
+authenticates to the PDP with the server's API key.
 """
 
 import asyncio
@@ -20,18 +22,29 @@ from uuid import UUID
 import aiohttp
 
 from permit_mcp._log import redact_recent, scrub
-from permit_mcp.config import ENV_VARS, Settings
+from permit_mcp.config import DEFAULT_PDP_URL, ENV_VARS, Settings
 
 MAX_ERROR_BODY = 2000
 REQUEST_TIMEOUT_SECONDS = 30
 MAX_CONCURRENT_USER_LOOKUPS = 5
 
 Decision = Literal["approve", "deny"]
+ElementSetting = Literal["access_request_element", "operation_approval_element"]
 _T = TypeVar("_T")
+
+_API = "Permit API"
+_PDP = "PDP"
+
+# Put before the PDP's own answer in the error of a check the PDP answered with 404.
+_PDP_NOT_FOUND_HINT = (
+    f"The URL in {ENV_VARS['pdp_url']} does not answer permission checks. Set it to a "
+    f"Permit PDP: the cloud PDP ({DEFAULT_PDP_URL}) or a container PDP. "
+    "The Permit API is not a PDP."
+)
 
 
 class PermitApiError(Exception):
-    """A Permit API call failed, or was refused before it was sent.
+    """A Permit API or PDP call failed, or was refused before it was sent.
 
     Attributes:
         operation: What the call was for, such as "approve access request".
@@ -40,26 +53,31 @@ class PermitApiError(Exception):
             login, or the call was refused before it was sent).
         body: The response body, or an explanation when there is none, with every
             registered secret redacted, then cut to 2000 characters.
+        service: Who was called: "Permit API" or "PDP".
 
     """
 
-    def __init__(self, operation: str, status: int | None, body: str) -> None:
+    def __init__(
+        self, operation: str, status: int | None, body: str, *, service: str = _API
+    ) -> None:
         """Build the error; `body` is redacted, then truncated, here.
 
         Args:
             operation: What the call was for.
             status: The HTTP status, or None.
             body: The response body or an explanation.
+            service: Who was called, named at the start of the message.
 
         """
         self.operation = operation
         self.status = status
+        self.service = service
         # Redacted before it is cut, so a secret that straddles the cut cannot leak in part.
         self.body = scrub(body)[:MAX_ERROR_BODY]
         if status is None:
-            message = f"Permit API call to {operation} failed: {self.body}"
+            message = f"{service} call to {operation} failed: {self.body}"
         else:
-            message = f"Permit API call to {operation} returned HTTP {status}: {self.body}"
+            message = f"{service} call to {operation} returned HTTP {status}: {self.body}"
         super().__init__(message)
 
 
@@ -216,6 +234,24 @@ class PermitApi:
             json_body=_without_none({"reviewer_comment": reviewer_comment}),
         )
 
+    async def cancel_access_request(self, user: str, access_request_id: UUID) -> object:
+        """Cancel an access request as `user`, with an Elements login of that user.
+
+        Withdraws a pending request the acting user filed; Permit refuses otherwise.
+
+        Args:
+            user: Key of the acting user, who filed the request.
+            access_request_id: ID of the access request.
+
+        Returns:
+            The canceled access request as the API returns it, or None for an empty body.
+
+        """
+        url = await self._elements_config_url(
+            "access_request_element", "access_requests", str(access_request_id), "cancel"
+        )
+        return await self._elements_call(user, "cancel access request", "PUT", url)
+
     async def create_operation_approval(
         self, user: str, *, reason: str, resource_instance: str | None
     ) -> object:
@@ -237,7 +273,7 @@ class PermitApi:
             user,
             "create operation approval",
             "POST",
-            await self._operation_approvals_url(),
+            await self._elements_config_url("operation_approval_element", "operation_approval"),
             json_body={"access_request_details": details, "reason": reason},
         )
 
@@ -274,7 +310,7 @@ class PermitApi:
             user,
             "list operation approvals",
             "GET",
-            await self._operation_approvals_url(),
+            await self._elements_config_url("operation_approval_element", "operation_approval"),
             params=_without_none(query),
         )
 
@@ -302,9 +338,84 @@ class PermitApi:
             user,
             f"{decision} operation approval",
             "PUT",
-            await self._operation_approvals_url(str(operation_approval_id), decision),
+            await self._elements_config_url(
+                "operation_approval_element",
+                "operation_approval",
+                str(operation_approval_id),
+                decision,
+            ),
             json_body=_without_none({"reviewer_comment": reviewer_comment}),
         )
+
+    async def cancel_operation_approval(self, user: str, operation_approval_id: UUID) -> object:
+        """Cancel an operation approval request as `user`.
+
+        Withdraws a pending request the acting user filed; Permit refuses otherwise.
+
+        Args:
+            user: Key of the acting user, who filed the request.
+            operation_approval_id: ID of the operation approval.
+
+        Returns:
+            The canceled operation approval as the API returns it, or None for an empty body.
+
+        """
+        return await self._elements_call(
+            user,
+            "cancel operation approval",
+            "PUT",
+            await self._elements_config_url(
+                "operation_approval_element",
+                "operation_approval",
+                str(operation_approval_id),
+                "cancel",
+            ),
+        )
+
+    async def check_permission(
+        self, user: str, *, action: str, resource_instance: str | None
+    ) -> bool:
+        """Ask the PDP whether `user` may perform `action` on the configured resource.
+
+        The check is in the configured tenant, on the resource type or on one instance of
+        it, with an empty context. It is sent to `pdp_url` with the server's API key.
+
+        Args:
+            user: Key of the acting user.
+            action: Key of the action, such as "read".
+            resource_instance: Key of one resource instance, or None for the type.
+
+        Returns:
+            The PDP's decision.
+
+        Raises:
+            PermitApiError: The PDP failed, or answered without a boolean "allow". The error
+                of a 404 answer starts with which PDP to set.
+
+        """
+        operation = "check permission"
+        resource = {"type": self._settings.resource, "tenant": self._settings.tenant}
+        if resource_instance is not None:
+            resource["key"] = resource_instance
+        body = {"user": {"key": user}, "action": action, "resource": resource, "context": {}}
+        url = f"{self._settings.pdp_url}/allowed"
+        try:
+            decision = await self._call(operation, "POST", url, json_body=body, service=_PDP)
+        except PermitApiError as exc:
+            if exc.status != http.HTTPStatus.NOT_FOUND:
+                raise
+            raise PermitApiError(
+                operation,
+                exc.status,
+                f"{_PDP_NOT_FOUND_HINT} The PDP answered: {exc.body}",
+                service=_PDP,
+            ) from exc
+        allow = decision.get("allow") if isinstance(decision, dict) else None
+        if not isinstance(allow, bool):
+            raise PermitApiError(
+                operation, None, "the PDP answered without a boolean allow", service=_PDP
+            )
+        return allow
 
     async def get_users(self, ids: Iterable[str]) -> dict[str, object]:
         """Fetch users by ID or key: one request per distinct ID, at most 5 at a time.
@@ -371,11 +482,12 @@ class PermitApi:
             "tenant", self._settings.tenant, *extra,
         )  # fmt: skip
 
-    async def _operation_approvals_url(self, *extra: str) -> str:
-        element = _element(self._settings.operation_approval_element, "operation_approval_element")
-        return await self._environment_url(
-            "elements", "config", element, "operation_approval", *extra
-        )
+    async def _elements_config_url(
+        self, setting: ElementSetting, collection: str, *extra: str
+    ) -> str:
+        """Return the URL of `collection` in the Elements config that `setting` names."""
+        element = _element(getattr(self._settings, setting), setting)
+        return await self._environment_url("elements", "config", element, collection, *extra)
 
     async def _environment_url(self, api: str, *segments: str) -> str:
         """Return the URL of `segments` under `api`, in the API key's project and environment.
@@ -444,6 +556,7 @@ class PermitApi:
         token: str | None = None,
         params: Mapping[str, str | int] | None = None,
         json_body: Mapping[str, Any] | None = None,
+        service: str = _API,
     ) -> object:
         """Send one request and return its JSON, or None when the body is empty.
 
@@ -454,9 +567,10 @@ class PermitApi:
             token: The Bearer token; the API key when None.
             params: Query parameters.
             json_body: The JSON body; none when None.
+            service: Who is called, used in errors: "Permit API" or "PDP".
 
         Raises:
-            PermitApiError: The API was unreachable or timed out, answered with a status
+            PermitApiError: The service was unreachable or timed out, answered with a status
                 outside 2xx (a redirect included), or answered with a body that is not JSON.
 
         """
@@ -480,20 +594,26 @@ class PermitApi:
                 operation,
                 None,
                 f"no response from {host} within {REQUEST_TIMEOUT_SECONDS} seconds",
+                service=service,
             ) from exc
         except aiohttp.ClientError as exc:
             raise PermitApiError(
-                operation, None, f"could not reach {host}: {type(exc).__name__}: {exc}"
+                operation,
+                None,
+                f"could not reach {host}: {type(exc).__name__}: {exc}",
+                service=service,
             ) from exc
         text = raw.decode("utf-8", errors="replace")
         if not http.HTTPStatus.OK <= status < http.HTTPStatus.MULTIPLE_CHOICES:
-            raise PermitApiError(operation, status, text)
+            raise PermitApiError(operation, status, text, service=service)
         if not text.strip():
             return None
         try:
             return json.loads(text)
         except json.JSONDecodeError as exc:
-            raise PermitApiError(operation, status, f"the response is not JSON: {text}") from exc
+            raise PermitApiError(
+                operation, status, f"the response is not JSON: {text}", service=service
+            ) from exc
 
     def _current_session(self) -> aiohttp.ClientSession:
         """Return the HTTP session, opened on first use."""

@@ -18,6 +18,7 @@ ENV_VARIABLES = (
     "PERMIT_RESOURCE",
     "PERMIT_TENANT",
     "PERMIT_API_URL",
+    "PERMIT_PDP_URL",
     "PERMIT_ACCESS_REQUEST_ELEMENT",
     "PERMIT_OPERATION_APPROVAL_ELEMENT",
     "PERMIT_MCP_USER",
@@ -46,14 +47,24 @@ def clean_environment(monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.delenv(name, raising=False)
 
 
-@pytest.fixture(scope="session")
-def api_server() -> Iterator[HTTPServer]:
-    """One local server for the session; `api` resets it for each test."""
+def _serve() -> Iterator[HTTPServer]:
     server = HTTPServer(host="127.0.0.1", port=0, threaded=True)
     server.start()
     yield server
     server.clear()
     server.stop()
+
+
+@pytest.fixture(scope="session")
+def api_server() -> Iterator[HTTPServer]:
+    """One local server for the session; `api` resets it for each test."""
+    yield from _serve()
+
+
+@pytest.fixture(scope="session")
+def pdp_server() -> Iterator[HTTPServer]:
+    """A second local server for the session, the PDP; `pdp` resets it for each test."""
+    yield from _serve()
 
 
 @pytest.fixture
@@ -65,9 +76,16 @@ def api(api_server: HTTPServer) -> HTTPServer:
 
 
 @pytest.fixture
-def settings(api: HTTPServer) -> Settings:
-    """Build Settings with both elements set, pointing at the mock API."""
-    return settings_for(base_url(api))
+def pdp(pdp_server: HTTPServer) -> HTTPServer:
+    """Reset the mock PDP so it answers nothing."""
+    pdp_server.clear()
+    return pdp_server
+
+
+@pytest.fixture
+def settings(api: HTTPServer, pdp: HTTPServer) -> Settings:
+    """Build Settings with both elements set, pointing at the mock API and the mock PDP."""
+    return settings_for(base_url(api), pdp_url=base_url(pdp))
 
 
 class RecordList(logging.Handler):

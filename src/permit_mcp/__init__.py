@@ -1,9 +1,10 @@
-"""An MCP server for Permit.io access requests and operation approvals.
+"""An MCP server for Permit.io access requests, operation approvals and permission checks.
 
 The access-request and operation-approval tools act as a Permit user that the server binds
 in code: one fixed user for the `permit-mcp` command, or the caller a host's identity
-resolver returns. list_resource_instances lists with the server's credentials, and still
-requires an identified caller. No tool takes a user argument.
+resolver returns. check_permission asks the PDP about that same user.
+list_resource_instances lists with the server's credentials, and still requires an
+identified caller. No tool takes a user argument.
 """
 
 from importlib.metadata import version

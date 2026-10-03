@@ -75,9 +75,10 @@ def create_server(
     server: MCPServer[Any] = MCPServer(
         SERVER_NAME,
         instructions=(
-            "Tools for Permit.io access requests and operation approvals on the "
-            f"'{settings.resource}' resource type in tenant '{settings.tenant}'. The "
-            f"access-request and operation-approval tools act as {acting}; no tool takes a "
+            "Tools for Permit.io access requests, operation approvals and permission checks on "
+            f"the '{settings.resource}' resource type in tenant '{settings.tenant}'. The "
+            f"access-request and operation-approval tools act as {acting}, and "
+            "check_permission asks the PDP about that user; no tool takes a "
             "user argument, and the acting user cannot be changed through tool arguments. "
             "list_resource_instances lists with the server's credentials, not filtered by the "
             "caller's permissions, and still requires an identified caller. Use it to find "

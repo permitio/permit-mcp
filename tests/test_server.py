@@ -24,6 +24,7 @@ from tests.support import (
     recorded,
     serve_case,
     serve_json,
+    server_of,
     settings_for,
 )
 
@@ -38,18 +39,22 @@ ACCESS_REQUEST_TOOLS = {
     "list_access_requests",
     "approve_access_request",
     "deny_access_request",
+    "cancel_access_request",
 }
 OPERATION_APPROVAL_TOOLS = {
     "create_operation_approval",
     "list_operation_approvals",
     "approve_operation_approval",
     "deny_operation_approval",
+    "cancel_operation_approval",
 }
+ALWAYS_REGISTERED = {"list_resource_instances", "check_permission"}
 LIST_TOOLS = {
     "list_resource_instances",
     "list_access_requests",
     "list_operation_approvals",
 }
+READ_ONLY_TOOLS = LIST_TOOLS | {"check_permission"}
 PUBLIC_NAMES = {
     "Settings",
     "ConfigError",
@@ -116,7 +121,7 @@ async def test_create_server_reads_the_environment(
         names = {tool.name for tool in (await client.list_tools()).tools}
         result = await client.call_tool("list_resource_instances", case.arguments)
 
-    assert names == {"list_resource_instances"} | ACCESS_REQUEST_TOOLS
+    assert names == ALWAYS_REGISTERED | ACCESS_REQUEST_TOOLS
     assert payload(result) == case.expected
     assert recorded(api) == list(case.calls)
 
@@ -129,6 +134,7 @@ async def test_server_explains_the_bound_user(api: HTTPServer) -> None:
 
     assert instructions is not None
     assert "act as the Permit user 'alice'" in instructions
+    assert "check_permission asks the PDP about that user" in instructions
     assert "list_resource_instances lists with the server's credentials" in instructions
 
 
@@ -145,8 +151,8 @@ async def test_server_with_a_resolver_explains_the_identified_caller(
 @pytest.mark.parametrize(
     ("access_request_element", "operation_approval_element", "expected"),
     [
-        ("ar-elem", None, {"list_resource_instances"} | ACCESS_REQUEST_TOOLS),
-        (None, "oa-elem", {"list_resource_instances"} | OPERATION_APPROVAL_TOOLS),
+        ("ar-elem", None, ALWAYS_REGISTERED | ACCESS_REQUEST_TOOLS),
+        (None, "oa-elem", ALWAYS_REGISTERED | OPERATION_APPROVAL_TOOLS),
         ("ar-elem", "oa-elem", set(TOOL_NAMES)),
     ],
 )
@@ -252,7 +258,7 @@ async def test_list_tools_are_read_only(settings: Settings) -> None:
 
     for tool in tools:
         assert tool.annotations is not None, tool.name
-        assert tool.annotations.read_only_hint is (tool.name in LIST_TOOLS), tool.name
+        assert tool.annotations.read_only_hint is (tool.name in READ_ONLY_TOOLS), tool.name
 
 
 async def test_paging_bounds_are_in_the_schema(settings: Settings) -> None:
@@ -285,14 +291,21 @@ async def test_status_choices_are_in_the_schema(settings: Settings) -> None:
         ("list_operation_approvals", {"per_page": 1000}),
         ("create_access_request", {"reason": "missing role"}),
         ("approve_access_request", {}),
+        ("cancel_access_request", {}),
+        ("cancel_operation_approval", {}),
+        ("check_permission", {}),
+        ("check_permission", {"action": ""}),
+        ("check_permission", {"action": "read", "resource_instance": ""}),
     ],
 )
 async def test_invalid_arguments_send_nothing(
-    api: HTTPServer, settings: Settings, name: str, arguments: dict[str, Any]
+    api: HTTPServer, pdp: HTTPServer, settings: Settings, name: str, arguments: dict[str, Any]
 ) -> None:
-    serve_case(api, CASES[name])
+    case = CASES[name]
+    serve_case(server_of(case, api, pdp), case)
 
     result = await call_tool(settings, name, arguments)
 
     error_text(result)
     assert api.log == []
+    assert pdp.log == []

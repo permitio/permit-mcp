@@ -22,6 +22,7 @@ FULL_ENV = {
     **BASE_ENV,
     "PERMIT_TENANT": "acme",
     "PERMIT_API_URL": "https://api.example.test",
+    "PERMIT_PDP_URL": "http://pdp.example.test:7766",
     "PERMIT_OPERATION_APPROVAL_ELEMENT": "oa-elem",
     "PERMIT_MCP_USER": "alice",
 }
@@ -35,6 +36,7 @@ def test_from_env_reads_every_variable() -> None:
         resource="documents",
         tenant="acme",
         api_url="https://api.example.test",
+        pdp_url="http://pdp.example.test:7766",
         access_request_element="ar-elem",
         operation_approval_element="oa-elem",
         user="alice",
@@ -46,6 +48,7 @@ def test_defaults_apply_when_optional_variables_are_unset() -> None:
 
     assert settings.tenant == "default"
     assert settings.api_url == "https://api.permit.io"
+    assert settings.pdp_url == "https://cloudpdp.api.permit.io"
     assert settings.operation_approval_element is None
     assert settings.user is None
 
@@ -115,20 +118,40 @@ def test_no_element_is_a_config_error() -> None:
         ("https://api.example.test:65536", "has an invalid port"),
     ],
 )
-def test_bad_url_is_a_config_error_that_does_not_echo_it(url: str, problem: str) -> None:
+@pytest.mark.parametrize(
+    ("name", "variable"), [("api_url", "PERMIT_API_URL"), ("pdp_url", "PERMIT_PDP_URL")]
+)
+def test_bad_url_is_a_config_error_that_does_not_echo_it(
+    name: str, variable: str, url: str, problem: str
+) -> None:
     with pytest.raises(ConfigError) as caught:
-        Settings.from_env({**BASE_ENV, "PERMIT_API_URL": url})
+        Settings.from_env({**BASE_ENV, variable: url})
 
     message = str(caught.value)
-    assert message.startswith(f"api_url (PERMIT_API_URL) {problem}")
+    assert message.startswith(f"{name} ({variable}) {problem}")
     assert url not in message
     assert "hunter2" not in message
 
 
-def test_trailing_slash_and_whitespace_are_stripped() -> None:
-    settings = Settings.from_env({**BASE_ENV, "PERMIT_API_URL": " https://api.example.test:8443/ "})
+@pytest.mark.parametrize(
+    ("variable", "example"),
+    [
+        ("PERMIT_API_URL", "https://api.permit.io"),
+        ("PERMIT_PDP_URL", "https://cloudpdp.api.permit.io"),
+    ],
+)
+def test_bad_url_error_gives_the_default_as_an_example(variable: str, example: str) -> None:
+    with pytest.raises(ConfigError, match=f"such as {example}\\."):
+        Settings.from_env({**BASE_ENV, variable: "not a url"})
 
-    assert settings.api_url == "https://api.example.test:8443"
+
+@pytest.mark.parametrize(
+    ("name", "variable"), [("api_url", "PERMIT_API_URL"), ("pdp_url", "PERMIT_PDP_URL")]
+)
+def test_trailing_slash_and_whitespace_are_stripped(name: str, variable: str) -> None:
+    settings = Settings.from_env({**BASE_ENV, variable: " https://host.example.test:8443/ "})
+
+    assert getattr(settings, name) == "https://host.example.test:8443"
 
 
 def test_direct_construction_validates() -> None:
@@ -137,6 +160,13 @@ def test_direct_construction_validates() -> None:
             api_key=API_KEY,
             resource="documents",
             api_url="nope",
+            access_request_element="x",
+        )
+    with pytest.raises(ConfigError, match="pdp_url"):
+        Settings(
+            api_key=API_KEY,
+            resource="documents",
+            pdp_url="nope",
             access_request_element="x",
         )
     with pytest.raises(ConfigError):
