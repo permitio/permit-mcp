@@ -65,6 +65,13 @@ docs = [
 [tool.pytest]
 asyncio_mode = "auto"
 testpaths = ["tests"]
+# The end-to-end suite (tests/e2e) talks to the real Permit API, so a plain `pytest` leaves it
+# out: deselected, not skipped, so the check that no test skipped still holds. A later
+# `-m e2e` on the command line selects it instead (CONTRIBUTING.md).
+addopts = ["-m", "not e2e"]
+markers = [
+    "e2e: against the real Permit API in a scratch environment (CONTRIBUTING.md); -m e2e",
+]
 strict = true
 filterwarnings = ["error"]
 

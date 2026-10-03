@@ -129,8 +129,10 @@ release, a repository owner must:
 
 ## What CI runs
 
-The `CI` check passes only when every job below succeeded. `dependency-review` and `mutation`
-run on pull requests only; on other events CI accepts them as skipped, with a notice.
+The `CI` check passes only when every job below succeeded, apart from the advisory `e2e`.
+`dependency-review` and `mutation` run on pull requests only; on other events CI accepts them
+as skipped, with a notice. `e2e` runs in CI's scheduled and manual runs only; elsewhere CI
+accepts it as skipped, with a notice.
 
 | Job | What it runs |
 | --- | --- |
@@ -144,8 +146,45 @@ run on pull requests only; on other events CI accepts them as skipped, with a no
 | `mutation` | `.github/scripts/mutation_gate.py` on the package lines a pull request changes; fails when the tests catch fewer than 80% of the mutants |
 | `workflow-hardening` | actionlint, and zizmor with its online audits |
 | `gitleaks` | gitleaks on the whole history |
+| `e2e` | The end-to-end suite against Permit (below), then a check that no test skipped, with the secrets of the `e2e` environment. Advisory: when it fails, CI passes and prints a warning. Scheduled and manual runs of CI only |
 
 A scheduled run each Monday also posts the audit result to Slack.
+
+### End-to-end tests
+
+`tests/e2e` runs every tool against the real Permit API and cloud PDP. A plain `uv run pytest`
+deselects it (`addopts = ["-m", "not e2e"]` in `pyproject.toml`); deselected tests are not
+skipped tests, so the offline runs' no-skip check still holds. Select it with `-m e2e`:
+
+```shell
+PERMIT_E2E_PROJECT_API_KEY=permit_key_... PERMIT_E2E_PROJECT_ID=<project id or key> \
+  uv run pytest -m e2e tests/e2e
+```
+
+- The key is a project-level API key with write access to the project (editor or admin).
+  Run the suite against a Permit project of your own, kept for these tests: it creates a
+  scratch environment, `mcp-e2e-<run id>`, in it, and deletes that environment, with
+  everything in it, when the run ends, after a failure too; a 404 counts as deleted.
+- Before it creates its own, the suite deletes every `mcp-e2e-*` environment of the project
+  older than an hour: what a run killed before its teardown left behind. A run lasts well
+  under an hour, so it never deletes one in use.
+- `PERMIT_E2E_API_URL` points the suite at another Permit API; the default is
+  `https://api.permit.io`. Permission checks go to the cloud PDP.
+- With either variable unset, `pytest -m e2e` exits 2 before any test starts, saying the suite
+  did not run.
+- In the environment, the suite builds a `document` resource type with one instance, three
+  users (a requester for each kind of element, and a reviewer), a ReBAC and an RBAC User
+  Management element, and an Approval Management element. `tests/e2e/scratch.py` describes
+  them. The world's own helpers are tested offline, in `tests/test_e2e_scratch.py`.
+- The world's setup retries a 429 after its Retry-After, and the tests retry a tool call
+  Permit answered with 429. The server itself never retries. Waits for the PDP are bounded by
+  elapsed time.
+
+In CI the `e2e` job reads the two variables from the secrets of the `e2e` GitHub environment,
+which only `main` may deploy to (see [Repository setup](#repository-setup)), so a workflow
+pushed on any other branch never receives them. Pull requests never run it: their code would
+run with the project's key. Runs wait for each other, so one project is never used by two runs at a
+time. The scratch environment's API key is masked in the log as soon as it is read.
 
 ### API coverage report
 
@@ -300,6 +339,13 @@ Done once by a repository owner, outside this repository:
   selected ones, with the one tag rule `v*`. It holds no secrets.
 - **GitHub Pages and the `github-pages` environment**: see
   [the API reference site](#the-api-reference-site).
+- **The `e2e` environment** (Settings, Environments, new environment `e2e`): deployment
+  branches set to selected ones, with the one rule `main`, and no required reviewers (a
+  reviewer would hold every weekly run, and CI and its Slack report with it). Create a Permit project kept for the end-to-end suite, and a project-level API key in
+  it with write access (editor). Add `PERMIT_E2E_PROJECT_API_KEY` (the key) and
+  `PERMIT_E2E_PROJECT_ID` (the project's ID or key) as secrets of the `e2e` environment, not as
+  repository secrets. Until the secrets are set, the job fails, saying the suite did not
+  run, and CI shows its advisory warning.
 - **A release-tag ruleset** (Settings, Rules, Rulesets, new tag ruleset): active, targeting
   `v*`, restricting creations, updates and deletions, with the maintainers on the bypass list.
   Only they can create, move or delete a version tag.

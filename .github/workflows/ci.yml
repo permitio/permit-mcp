@@ -760,13 +760,66 @@ jobs:
           fi
           echo "gitleaks scanned ${bytes} bytes of ${commits} commits and found no secret."
 
+  # The end-to-end suite (tests/e2e) against the real Permit API and cloud PDP:
+  # it creates a scratch environment in the project the two secrets name, runs
+  # every tool in it as a requester and a reviewer, and deletes it at the end
+  # (CONTRIBUTING.md). Advisory: a Permit outage must not fail CI, which prints
+  # its failure as a warning. It runs in CI's own scheduled and manual runs only,
+  # never on a pull request: the secrets are the e2e environment's, which only
+  # main may deploy to, so no other branch's workflow gets them. Elsewhere it is skipped,
+  # and CI passes that with a notice (SCHEDULED_JOBS). Without the secrets
+  # pytest exits 2, saying the suite did not run. One concurrency group for the
+  # project: runs wait for each other, and none is cancelled for a newer one
+  # (GitHub still drops a waiting run when another starts waiting). The scratch
+  # environment's API key is masked as soon as it is read. No cache.
+  e2e:
+    name: e2e
+    if: >-
+      github.workflow == 'CI' &&
+      (github.event_name == 'schedule' || github.event_name == 'workflow_dispatch')
+    environment: e2e
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    permissions:
+      contents: read
+    concurrency:
+      group: ${{ github.repository }}-permit-e2e-project
+      cancel-in-progress: false
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7  # v10.2.0
+        with:
+          version-file: uv.lock
+          python-version: "3.13"
+          activate-environment: true
+          enable-cache: false
+      - name: Install from uv.lock
+        run: uv sync --locked
+      # -m e2e selects the suite, which pyproject.toml's addopts deselects.
+      # Exits 2 when a secret is missing, before any test or request.
+      - name: End-to-end tests
+        env:
+          PERMIT_E2E_PROJECT_API_KEY: ${{ secrets.PERMIT_E2E_PROJECT_API_KEY }}
+          PERMIT_E2E_PROJECT_ID: ${{ secrets.PERMIT_E2E_PROJECT_ID }}
+        run: >-
+          python -m pytest -q -W error -m e2e -p no:cacheprovider
+          --junitxml="$RUNNER_TEMP/junit.xml" tests/e2e
+      - name: Check that every test ran
+        run: >-
+          uv run --no-project --python 3.11 python .github/scripts/check_junit.py
+          "$RUNNER_TEMP/junit.xml"
+
   # The one check to require. It runs whatever happened to the jobs it needs,
   # since GitHub counts a skipped required check as passing, and fails unless
-  # each of them succeeded: a failed, cancelled or skipped job fails it, with two
-  # exceptions. The jobs in PULL_REQUEST_JOBS (dependency-review and mutation) run
-  # on pull requests only, so on any other event each is skipped, and that passes
-  # with a notice. A job in ADVISORY_JOBS (space
-  # separated) may fail without failing CI; its result is printed as a warning.
+  # each of them succeeded: a failed, cancelled or skipped job fails it, with
+  # three exceptions. The jobs in PULL_REQUEST_JOBS (dependency-review and
+  # mutation) run on pull requests only, so on any other event each is skipped,
+  # and that passes with a notice. The jobs in SCHEDULED_JOBS (e2e) run in CI's
+  # own scheduled and manual runs only, so anywhere else a skip passes with a
+  # notice. A job in ADVISORY_JOBS (space separated) may fail without failing
+  # CI; its result is printed as a warning.
   # Exits 1 when a job did not succeed, and 2 when the results of other than
   # EXPECTED_JOBS jobs arrive. The prek job's needs check fails when a job is
   # missing from needs, ADVISORY_JOBS names a job CI does not need, or
@@ -779,6 +832,7 @@ jobs:
       - audit-scripts
       - dependency-review
       - docs
+      - e2e
       - gitleaks
       - mutation
       - package
@@ -799,9 +853,11 @@ jobs:
         env:
           NEEDS: ${{ toJSON(needs) }}
           EVENT: ${{ github.event_name }}
-          EXPECTED_JOBS: 10
-          ADVISORY_JOBS: ""
+          EXPECTED_JOBS: 11
+          ADVISORY_JOBS: e2e
           PULL_REQUEST_JOBS: dependency-review mutation
+          SCHEDULED_JOBS: e2e
+          WORKFLOW: ${{ github.workflow }}
         run: |
           if ! results=$(jq -r 'to_entries[] | "\(.key) \(.value.result)"' <<<"$NEEDS"); then
             echo "::error title=CI::Could not read the job results."
@@ -818,6 +874,15 @@ jobs:
             for job in $PULL_REQUEST_JOBS; do
               if grep -qx "$job skipped" <<<"$failed"; then
                 echo "::notice title=CI::$job runs on pull requests only;" \
+                  "skipped on this $EVENT run."
+              fi
+              failed=$(grep -vx "$job skipped" <<<"$failed" || true)
+            done
+          fi
+          if [[ $WORKFLOW != CI || ($EVENT != schedule && $EVENT != workflow_dispatch) ]]; then
+            for job in $SCHEDULED_JOBS; do
+              if grep -qx "$job skipped" <<<"$failed"; then
+                echo "::notice title=CI::$job runs in CI's scheduled and manual runs only;" \
                   "skipped on this $EVENT run."
               fi
               failed=$(grep -vx "$job skipped" <<<"$failed" || true)

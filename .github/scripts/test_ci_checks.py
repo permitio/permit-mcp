@@ -43,6 +43,11 @@ GITLEAKS_STEP = ("gitleaks", "Scan the history")
 SURFACE_STEP = ("tests", "Report tool surface changes")
 MUTATION_STEP = ("mutation", "Run the mutation tests on the changed lines")
 PULL_REQUEST_IF = "github.event_name == 'pull_request'"
+# CI's own scheduled and manual runs: never a pull request, a push or a run release.yml calls.
+SCHEDULED_IF = (
+    "github.workflow == 'CI' &&"
+    " (github.event_name == 'schedule' || github.event_name == 'workflow_dispatch')"
+)
 DEFAULT_SHELL = "bash --noprofile --norc -euo pipefail {0}"
 
 
@@ -182,10 +187,18 @@ def results(needed: list[str], overrides: dict[str, str] | None = None) -> str:
     )
 
 
-def run_ci(
-    workflow: dict[str, Any], tmp_path: Path, needs: str, event: str, advisory: str = ""
+def run_ci(  # noqa: PLR0913 - the step's inputs, keyword-only past the event
+    workflow: dict[str, Any],
+    tmp_path: Path,
+    needs: str,
+    event: str,
+    advisory: str | None = None,
+    *,
+    workflow_name: str = "CI",
 ) -> subprocess.CompletedProcess[str]:
-    env = {"NEEDS": needs, "EVENT": event, "ADVISORY_JOBS": advisory}
+    env = {"NEEDS": needs, "EVENT": event, "WORKFLOW": workflow_name}
+    if advisory is not None:
+        env["ADVISORY_JOBS"] = advisory
     return run_step(workflow, CI_STEP, tmp_path, env)
 
 
@@ -195,8 +208,59 @@ def test_ci_is_named_ci_and_runs_whatever_happened_to_its_needs(workflow: dict[s
     assert ci["if"] == "always()"
 
 
-def test_no_job_is_advisory_yet(workflow: dict[str, Any]) -> None:
-    assert find_step(workflow, CI_STEP)["env"]["ADVISORY_JOBS"] == ""
+def test_only_the_e2e_suite_is_advisory(workflow: dict[str, Any]) -> None:
+    assert find_step(workflow, CI_STEP)["env"]["ADVISORY_JOBS"] == "e2e"
+
+
+def test_scheduled_jobs_are_the_needed_jobs_that_run_in_scheduled_and_manual_runs_only(
+    workflow: dict[str, Any], needed: list[str]
+) -> None:
+    scheduled = [job for job in needed if workflow["jobs"][job].get("if") == SCHEDULED_IF]
+    assert find_step(workflow, CI_STEP)["env"]["SCHEDULED_JOBS"].split() == scheduled == ["e2e"]
+    assert find_step(workflow, CI_STEP)["env"]["WORKFLOW"] == "${{ github.workflow }}"
+
+
+@pytest.mark.parametrize("result", ["failure", "cancelled", "skipped"])
+@pytest.mark.parametrize("event", ["schedule", "workflow_dispatch"])
+def test_ci_warns_when_the_e2e_suite_did_not_succeed_in_a_run_it_belongs_to(
+    workflow: dict[str, Any], needed: list[str], tmp_path: Path, result: str, event: str
+) -> None:
+    completed = run_ci(workflow, tmp_path, results(needed, {"e2e": result}), event)
+    assert completed.returncode == 0, completed.stdout + completed.stderr
+    assert f"::warning title=CI::Advisory job did not succeed: e2e {result}" in completed.stdout
+    assert "::notice" not in completed.stdout
+
+
+@pytest.mark.parametrize(
+    ("workflow_name", "event"),
+    [
+        ("CI", "pull_request"),
+        ("CI", "push"),
+        ("Release", "release"),
+        ("Release", "workflow_dispatch"),
+    ],
+)
+def test_ci_notes_the_e2e_suite_skipped_outside_the_runs_it_belongs_to(
+    workflow: dict[str, Any], needed: list[str], tmp_path: Path, workflow_name: str, event: str
+) -> None:
+    needs = results(needed, {"e2e": "skipped"})
+    completed = run_ci(workflow, tmp_path, needs, event, workflow_name=workflow_name)
+    assert completed.returncode == 0, completed.stdout + completed.stderr
+    assert (
+        f"::notice title=CI::e2e runs in CI's scheduled and manual runs only; skipped on this"
+        f" {event} run."
+    ) in completed.stdout
+    assert "::warning" not in completed.stdout
+
+
+@pytest.mark.parametrize("result", ["failure", "cancelled"])
+def test_ci_still_warns_of_an_e2e_suite_that_ran_and_failed_elsewhere(
+    workflow: dict[str, Any], needed: list[str], tmp_path: Path, result: str
+) -> None:
+    completed = run_ci(workflow, tmp_path, results(needed, {"e2e": result}), "push")
+    assert completed.returncode == 0, completed.stdout + completed.stderr
+    assert f"::warning title=CI::Advisory job did not succeed: e2e {result}" in completed.stdout
+    assert "::notice" not in completed.stdout
 
 
 @pytest.mark.parametrize("event", ["pull_request", "push", "schedule", "workflow_dispatch"])
@@ -393,7 +457,7 @@ def test_needs_check_passes_on_the_committed_workflow(
 ) -> None:
     completed = run_step(workflow, NEEDS_CHECK_STEP, tmp_path, {})
     assert completed.returncode == 0, completed.stdout + completed.stderr
-    assert f"CI needs every job: {', '.join(sorted(needed))}. Advisory: none." in (completed.stdout)
+    assert f"CI needs every job: {', '.join(sorted(needed))}. Advisory: e2e." in completed.stdout
 
 
 def test_expected_jobs_is_the_number_of_needed_jobs(
@@ -1548,6 +1612,7 @@ GATING_JOB_IFS = {
     "ci": "always()",
     "dependency-review": PULL_REQUEST_IF,
     "mutation": PULL_REQUEST_IF,
+    "e2e": SCHEDULED_IF,
 }
 RUN_ID_GROUP = (
     "(github.event_name == 'schedule' || github.event_name == 'workflow_dispatch')"
@@ -1645,12 +1710,14 @@ def test_scheduled_and_manual_runs_have_their_own_concurrency_group(
         if name in {"dependency-review", "mutation"}:
             assert job["if"] == PULL_REQUEST_IF
             assert group == f"${{{{ github.workflow }}}}-${{{{ github.ref }}}}-{name}"
+        elif name == "e2e":
+            assert group == E2E_GROUP
         elif name == "notify":
             assert group.endswith("-${{ github.run_id }}")
         else:
             assert group.endswith(RUN_ID_GROUP), name
         expected_cancel = (
-            "false" if name == "notify" else "${{ github.event_name == 'pull_request' }}"
+            "false" if name in {"notify", "e2e"} else "${{ github.event_name == 'pull_request' }}"
         )
         assert str(job["concurrency"]["cancel-in-progress"]).lower() == expected_cancel.lower()
 
@@ -1842,3 +1909,80 @@ def test_build_docs_stops_when_the_pages_cannot_be_written(tmp_path: Path) -> No
     completed = run_build_docs(tmp_path, "exit 3")
     assert completed.returncode == 3
     assert len((tmp_path / "uv.txt").read_text(encoding="utf-8").splitlines()) == 1
+
+
+# --- the end-to-end suite ---------------------------------------------------------
+
+E2E_STEP = ("e2e", "End-to-end tests")
+E2E_JUNIT_STEP = ("e2e", "Check that every test ran")
+E2E_GROUP = "${{ github.repository }}-permit-e2e-project"
+
+
+def secret_reads(node: object, where: str = "") -> list[str]:
+    """Return the path in the workflow of every string that reads the secrets context."""
+    if isinstance(node, dict):
+        return [
+            found for key, value in node.items() for found in secret_reads(value, f"{where}.{key}")
+        ]
+    if isinstance(node, list):
+        return [
+            found
+            for index, value in enumerate(node)
+            for found in secret_reads(value, f"{where}[{index}]")
+        ]
+    return [where] if isinstance(node, str) and "secrets" in node else []
+
+
+def step_index(workflow: dict[str, Any], job: str, key: str) -> int:
+    keys = [step_key(step) for step in workflow["jobs"][job]["steps"]]
+    return keys.index(key)
+
+
+def test_only_the_e2e_tests_and_notify_read_secrets(workflow: dict[str, Any]) -> None:
+    e2e = step_index(workflow, "e2e", E2E_STEP[1])
+    slack = step_index(workflow, "notify", "slackapi/slack-github-action")
+    assert workflow["jobs"]["e2e"]["environment"] == "e2e"
+    assert secret_reads(workflow["jobs"]) == [
+        f".e2e.steps[{e2e}].env.PERMIT_E2E_PROJECT_API_KEY",
+        f".e2e.steps[{e2e}].env.PERMIT_E2E_PROJECT_ID",
+        ".notify.env.SLACK_WEBHOOK_URL",
+        f".notify.steps[{slack}].with.webhook",
+    ]
+    assert find_step(workflow, E2E_STEP)["env"] == {
+        "PERMIT_E2E_PROJECT_API_KEY": "${{ secrets.PERMIT_E2E_PROJECT_API_KEY }}",
+        "PERMIT_E2E_PROJECT_ID": "${{ secrets.PERMIT_E2E_PROJECT_ID }}",
+    }
+
+
+def test_the_e2e_job_runs_the_selected_suite_and_checks_that_every_test_ran(
+    workflow: dict[str, Any],
+) -> None:
+    job = workflow["jobs"]["e2e"]
+    assert job["if"] == SCHEDULED_IF
+    assert job["permissions"] == {"contents": "read"}
+    assert [step_key(step) for step in job["steps"]] == [
+        "actions/checkout",
+        "astral-sh/setup-uv",
+        "Install from uv.lock",
+        E2E_STEP[1],
+        E2E_JUNIT_STEP[1],
+    ]
+    assert all("if" not in step for step in job["steps"])
+    assert find_step(workflow, ("e2e", "Install from uv.lock"))["run"] == "uv sync --locked"
+    assert " ".join(find_step(workflow, E2E_STEP)["run"].split()) == (
+        "python -m pytest -q -W error -m e2e -p no:cacheprovider"
+        ' --junitxml="$RUNNER_TEMP/junit.xml" tests/e2e'
+    )
+    assert " ".join(find_step(workflow, E2E_JUNIT_STEP)["run"].split()) == (
+        "uv run --no-project --python 3.11 python .github/scripts/check_junit.py"
+        ' "$RUNNER_TEMP/junit.xml"'
+    )
+
+
+def test_e2e_runs_against_the_project_one_at_a_time_and_is_never_cancelled(
+    workflow: dict[str, Any],
+) -> None:
+    assert workflow["jobs"]["e2e"]["concurrency"] == {
+        "group": E2E_GROUP,
+        "cancel-in-progress": False,
+    }

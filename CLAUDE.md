@@ -55,8 +55,10 @@ job, and how to take a dependency release younger than the 7-day cooldown. In sh
   `EXPECTED_JOBS` changes to match (see CONTRIBUTING.md). The `prek` job fails otherwise.
 - **Offline tests never skip.** CI fails a run in which a test skipped or none ran. Do not add
   `pytest.skip`, `skipif` or `importorskip`.
-- **Never test against the real Permit cloud.** Offline tests use the mock servers in
-  `tests/conftest.py`, which also clears the Permit, proxy and netrc variables for every test.
+- **Never test against the real Permit cloud except through the e2e suite with the owner's
+  keys.** That suite is `tests/e2e`, marked `e2e`, deselected by default and run with
+  `-m e2e` (CONTRIBUTING.md). Offline tests use the mock servers in `tests/conftest.py`, which
+  also clears the Permit, proxy and netrc variables for every test.
 - Zero warnings: pytest runs with `filterwarnings = ["error"]`, and mypy is strict.
 - 100-character lines, absolute imports, Google-style docstrings.
 - Docs describe what the code does now. Plain, factual wording.
