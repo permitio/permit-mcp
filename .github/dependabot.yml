@@ -32,10 +32,11 @@ updates:
       minor-and-patch:
         update-types: ["minor", "patch"]
     ignore:
-      # The uv pin in the dev group is the uv every setup-uv step reads from
-      # uv.lock (version-file), and the [build-system] bound on uv_build must
-      # allow it, so releases build with that uv's built-in backend. The two
-      # move together, by hand.
+      # The uv pin in the dev group is the uv every setup-uv step in ci.yml reads
+      # from uv.lock (version-file), and the uv release.yml pins by version and
+      # checksum. The [build-system] bound on uv_build must allow it, so releases
+      # build with that uv's built-in backend. All of them move together, by
+      # hand; test_release.py fails when they disagree.
       - dependency-name: "uv"
       - dependency-name: "uv_build"
     commit-message:
@@ -65,9 +66,10 @@ updates:
       - "dependencies"
 
   # The actions in .github/workflows, pinned to commits with the release in a
-  # comment; Dependabot updates both. The binaries the workflow downloads by
-  # version and checksum (Trivy, actionlint, gitleaks) and zizmor-action's
-  # zizmor version are updated by hand. Only default-days is supported here.
+  # comment; Dependabot updates both. The binaries the workflows download by
+  # version and checksum (Trivy, actionlint, gitleaks, and release.yml's uv)
+  # and zizmor-action's zizmor version are updated by hand. Only default-days
+  # is supported here.
   - package-ecosystem: "github-actions"
     directory: "/"
     schedule:

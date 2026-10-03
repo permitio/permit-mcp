@@ -6,10 +6,12 @@ name: CI
 # merges, and with no path filter, since a required check that never starts
 # blocks the pull request. Pushes to main, so a regression shows on main. Weekly,
 # since advisories are published against versions that already shipped; notify
-# posts that run's result to Slack. A release workflow calls this one and
-# publishes only when CI passes. A called run has the caller's event and
-# permissions: every job here needs at most `contents: read`, so the caller's job
-# must grant that, and GitHub refuses the whole run if it grants less.
+# posts that run's result to Slack. release.yml calls this one and publishes
+# only when CI passes. A called run has the caller's event, permissions and
+# github.workflow: every job here needs at most `contents: read`, so the caller's
+# job must grant that, and GitHub refuses the whole run if it grants less. The
+# live-spec drift check and notify run only when github.workflow is CI, so a
+# release's dry run (a workflow_dispatch of Release) runs neither.
 on:
   pull_request:
   push:
@@ -18,6 +20,14 @@ on:
     - cron: "0 9 * * 1"  # Mondays 09:00 UTC
   workflow_dispatch:
   workflow_call:
+    inputs:
+      # The release gates on the runtime trees only: a dev tool's advisory never
+      # reaches a user, so it must not hold up a release. Every other run gates
+      # on the dev tree too.
+      gate-dev-tree:
+        description: Fail the audit on an advisory in the dev tree as well
+        type: boolean
+        default: true
 
 permissions: {}
 
@@ -251,12 +261,12 @@ jobs:
           "$RUNNER_TEMP/junit.xml"
       # Weekly and manual runs check the live control-plane spec for drift: this
       # writes its in-scope inventory as the committed one was written. Other
-      # runs read only the committed inventory, so a pull request's result depends
-      # on its commit alone.
+      # runs, and every run release.yml calls, read only the committed inventory,
+      # so a pull request's or a release's result depends on its commit alone.
       - name: Snapshot the live control-plane spec
         if: >-
-          matrix.resolution == 'locked' && (github.event_name == 'schedule'
-          || github.event_name == 'workflow_dispatch')
+          matrix.resolution == 'locked' && github.workflow == 'CI' &&
+          (github.event_name == 'schedule' || github.event_name == 'workflow_dispatch')
         env:
           SPEC_URL: https://api.permit.io/v2/openapi.json
         run: |
@@ -275,10 +285,11 @@ jobs:
         if: matrix.resolution == 'locked'
         env:
           EVENT: ${{ github.event_name }}
+          WORKFLOW: ${{ github.workflow }}
         run: |
           committed=.github/api-specs/control-plane.json
           control_plane=(--spec "control-plane=$committed")
-          if [[ $EVENT == schedule || $EVENT == workflow_dispatch ]]; then
+          if [[ $WORKFLOW == CI && ($EVENT == schedule || $EVENT == workflow_dispatch) ]]; then
             control_plane=(--spec "control-plane=$RUNNER_TEMP/api-specs/control-plane.json"
               --baseline "control-plane=$committed")
           fi
@@ -290,8 +301,8 @@ jobs:
       # The live inventory, to commit when the drift is expected (CONTRIBUTING.md).
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
         if: >-
-          ${{ !cancelled() && matrix.resolution == 'locked' && (github.event_name ==
-          'schedule' || github.event_name == 'workflow_dispatch') }}
+          ${{ !cancelled() && matrix.resolution == 'locked' && github.workflow == 'CI' &&
+          (github.event_name == 'schedule' || github.event_name == 'workflow_dispatch') }}
         with:
           name: control-plane-spec
           path: ${{ runner.temp }}/api-specs/
@@ -328,7 +339,7 @@ jobs:
       - name: Check the wheel and sdist
         run: >-
           uv run --no-project --python 3.11 python .github/scripts/check_dist.py
-          "$RUNNER_TEMP/dist"
+          "$RUNNER_TEMP/dist" pyproject.toml
       - name: Run the console script from the installed wheel
         run: |
           venv="$RUNNER_TEMP/smoke"
@@ -399,10 +410,18 @@ jobs:
             --dir "$AUDIT_DIR" "${trees[@]}" --annotations
       # Exits 1 on a fixable HIGH or CRITICAL advisory, and 2 when a report is
       # missing, unreadable, scanned nothing or scanned other than its tree.
+      # The dev tree is gated unless a caller passes gate-dev-tree: false; toJSON
+      # tells that false from the null of a run that is not called.
       - name: Gate on fixable HIGH and CRITICAL advisories
         if: ${{ !cancelled() }}
+        env:
+          GATE_DEV_TREE: ${{ toJSON(inputs.gate-dev-tree) }}
         run: |
           read -ra trees <<<"$AUDIT_TREES"
+          if [[ $GATE_DEV_TREE == false ]]; then
+            read -ra trees <<<"${AUDIT_TREES/dev-ceiling/}"
+            echo "dev-ceiling is reported in the summary but not gated (gate-dev-tree: false)."
+          fi
           status=0
           uv run --no-project --python 3.11 python .github/scripts/format_audit.py \
             --dir "$AUDIT_DIR" "${trees[@]}" --gate || status=$?
@@ -655,15 +674,17 @@ jobs:
 
   # Posts one Slack message on scheduled and manual runs, when no pull request
   # reads the result: the audit's findings, or that it did not complete, and
-  # CI's result. A called run notifies only when its caller was started by one
-  # of those events and passes the secret. Without SLACK_WEBHOOK_URL the job
+  # CI's result. A called run never notifies: its github.workflow is the
+  # caller's name, not CI. Without SLACK_WEBHOOK_URL the job
   # warns and passes. The message is rendered from the audit's artifact by the
   # tested format_audit.py, and toJSON quotes it into the payload, so advisory
   # text cannot break out of it.
   notify:
     name: notify
     needs: [audit, ci]
-    if: always() && (github.event_name == 'schedule' || github.event_name == 'workflow_dispatch')
+    if: >-
+      always() && github.workflow == 'CI' &&
+      (github.event_name == 'schedule' || github.event_name == 'workflow_dispatch')
     runs-on: ubuntu-24.04
     timeout-minutes: 5
     permissions:

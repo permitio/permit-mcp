@@ -326,7 +326,8 @@ def test_notify_reports_after_ci_on_scheduled_and_manual_runs_only(
     assert "notify" not in needed
     assert set(notify["needs"]) == {"audit", "ci"}
     assert notify["if"] == (
-        "always() && (github.event_name == 'schedule' || github.event_name == 'workflow_dispatch')"
+        "always() && github.workflow == 'CI' &&"
+        " (github.event_name == 'schedule' || github.event_name == 'workflow_dispatch')"
     )
 
 
@@ -623,6 +624,46 @@ def test_audit_gate_step_maps_the_gate_s_exits(workflow: dict[str, Any], tmp_pat
     incomplete = gate("clean", "absent")
     assert incomplete.returncode == 2
     assert "::error title=Dependency audit::The audit did not complete" in incomplete.stdout
+
+
+def gate_with_a_vulnerable_dev_tree(
+    workflow: dict[str, Any], tmp_path: Path, gate_dev_tree: str
+) -> subprocess.CompletedProcess[str]:
+    package = [{"Name": "p", "Version": "1"}]
+    clean = {"Results": [{"Target": "requirements.txt", "Packages": package}]}
+    advisory = {"VulnerabilityID": "CVE-1", "PkgName": "p", "Severity": "HIGH", "FixedVersion": "2"}
+    vulnerable = {"Results": [{**clean["Results"][0], "Vulnerabilities": [advisory]}]}
+    for tree in audit_trees(workflow):
+        report = vulnerable if tree == "dev-ceiling" else clean
+        plant_tree(tmp_path / "audit", tree, report, pinned=1)
+    env = {"AUDIT_DIR": str(tmp_path / "audit"), "GATE_DEV_TREE": gate_dev_tree}
+    return run_step(workflow, AUDIT_GATE_STEP, tmp_path, env)
+
+
+@pytest.mark.parametrize("gate_dev_tree", ["true", "null"], ids=["true", "not called"])
+def test_the_audit_gates_on_the_dev_tree_by_default(
+    workflow: dict[str, Any], tmp_path: Path, gate_dev_tree: str
+) -> None:
+    completed = gate_with_a_vulnerable_dev_tree(workflow, tmp_path, gate_dev_tree)
+    assert completed.returncode == 1
+    assert "::error title=Dependency audit::Fixable HIGH or CRITICAL" in completed.stdout
+
+
+def test_a_caller_can_leave_the_dev_tree_ungated(workflow: dict[str, Any], tmp_path: Path) -> None:
+    completed = gate_with_a_vulnerable_dev_tree(workflow, tmp_path, "false")
+    assert completed.returncode == 0, completed.stdout + completed.stderr
+    assert "dev-ceiling is reported in the summary but not gated" in completed.stdout
+
+
+def test_gate_dev_tree_is_a_called_run_s_input_defaulting_to_true(
+    workflow: dict[str, Any],
+) -> None:
+    assert workflow["on"]["workflow_call"]["inputs"]["gate-dev-tree"]["type"] == "boolean"
+    assert workflow["on"]["workflow_call"]["inputs"]["gate-dev-tree"]["default"] is True
+    gate = find_step(workflow, AUDIT_GATE_STEP)
+    assert gate["env"] == {"GATE_DEV_TREE": "${{ toJSON(inputs.gate-dev-tree) }}"}
+    for step in ("Write the job summary", "Annotate blocking advisories"):
+        assert "GATE_DEV_TREE" not in find_step(workflow, ("audit", step)).get("env", {})
 
 
 # --- audit-deps.sh -------------------------------------------------------------------
@@ -1003,7 +1044,12 @@ def test_the_pinned_gitleaks_finds_a_planted_token_despite_the_repository_s_supp
 
 # --- the API coverage report ----------------------------------------------------------
 
-LIVE = "(github.event_name == 'schedule' || github.event_name == 'workflow_dispatch')"
+# github.workflow is the caller's name in a called run, so a release's dry run
+# (a workflow_dispatch of Release) never reads the live spec.
+LIVE = (
+    "github.workflow == 'CI' &&"
+    " (github.event_name == 'schedule' || github.event_name == 'workflow_dispatch')"
+)
 SNAPSHOT_STEP = ("tests", "Snapshot the live control-plane spec")
 COVERAGE_STEP = ("tests", "Report API coverage")
 COMMITTED_INVENTORY = REPO_ROOT / ".github" / "api-specs" / "control-plane.json"
@@ -1044,7 +1090,7 @@ def test_a_pull_request_reports_against_the_committed_inventory(
         workflow,
         COVERAGE_STEP,
         tmp_path,
-        {"EVENT": "pull_request", "GITHUB_STEP_SUMMARY": str(summary)},
+        {"EVENT": "pull_request", "WORKFLOW": "CI", "GITHUB_STEP_SUMMARY": str(summary)},
     )
     assert completed.returncode == 0, completed.stdout + completed.stderr
     text = summary.read_text(encoding="utf-8")
@@ -1098,7 +1144,7 @@ def test_scheduled_and_manual_runs_check_the_live_spec_for_drift(
 
     plant_coverage_record(tmp_path)
     summary = tmp_path / "summary.md"
-    env = {"EVENT": event, "GITHUB_STEP_SUMMARY": str(summary)}
+    env = {"EVENT": event, "WORKFLOW": "CI", "GITHUB_STEP_SUMMARY": str(summary)}
     completed = run_step(workflow, COVERAGE_STEP, tmp_path, env)
     text = summary.read_text(encoding="utf-8")
     assert f"- Control plane: `{live}`" in text
@@ -1109,6 +1155,27 @@ def test_scheduled_and_manual_runs_check_the_live_spec_for_drift(
         assert "'query resource_instance'" in text
     else:
         assert completed.returncode == 0, completed.stdout + completed.stderr
+
+
+@pytest.mark.parametrize("event", ["release", "workflow_dispatch"])
+def test_a_run_release_yml_calls_reports_against_the_committed_inventory(
+    workflow: dict[str, Any], tmp_path: Path, event: str
+) -> None:
+    plant_coverage_record(tmp_path)
+    summary = tmp_path / "summary.md"
+    env = {"EVENT": event, "WORKFLOW": "Release", "GITHUB_STEP_SUMMARY": str(summary)}
+    completed = run_step(workflow, COVERAGE_STEP, tmp_path, env)
+    assert completed.returncode == 0, completed.stdout + completed.stderr
+    text = summary.read_text(encoding="utf-8")
+    assert "- Control plane: `.github/api-specs/control-plane.json`" in text
+    assert "baseline" not in text
+
+
+def test_the_live_spec_steps_run_in_ci_itself_only(workflow: dict[str, Any]) -> None:
+    snapshot = " ".join(find_step(workflow, SNAPSHOT_STEP)["if"].split())
+    assert snapshot == f"matrix.resolution == 'locked' && {LIVE}"
+    assert find_step(workflow, COVERAGE_STEP)["env"]["WORKFLOW"] == "${{ github.workflow }}"
+    assert workflow["name"] == "CI"
 
 
 def test_a_failed_spec_download_fails_the_snapshot_step(

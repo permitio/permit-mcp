@@ -7,6 +7,7 @@ uv run --only-dev pytest -c .github/scripts/pytest.ini .github/scripts/test_chec
 from __future__ import annotations
 
 import io
+import shutil
 import subprocess
 import sys
 import tarfile
@@ -20,11 +21,32 @@ SCRIPT = Path(__file__).parent / "check_dist.py"
 PACKAGE_FILES = ["__init__.py", "server.py", "py.typed"]
 DIST_INFO = ["METADATA", "WHEEL", "RECORD", "entry_points.txt", "licenses/LICENSE"]
 SDIST_TOP = ["PKG-INFO", "pyproject.toml", "pyproject.toml.orig", "README.md", "LICENSE"]
+PYPROJECT = """[project]
+name = "permit-mcp"
+version = "1.2.3"
+requires-python = ">=3.11"
+dependencies = ["aiohttp>=3.14.3,<4", "mcp >= 2.2.0, < 3"]
+"""
+# As uv_build writes it: other header order, other whitespace.
+METADATA = """Metadata-Version: 2.4
+Name: permit-mcp
+Version: 1.2.3
+Requires-Dist: mcp>=2.2.0,<3
+Requires-Dist: aiohttp>=3.14.3,<4
+Requires-Python: >=3.11
+
+The README.
+"""
 
 
-def check(dist: Path) -> subprocess.CompletedProcess[str]:
+def check(dist: Path, pyproject: Path | None = None) -> subprocess.CompletedProcess[str]:
+    """Run check_dist.py on dist and, unless given another, the dist fixture's pyproject.toml."""
+    pyproject = pyproject or dist.parent / "pyproject.toml"
     return subprocess.run(
-        [sys.executable, str(SCRIPT), str(dist)], capture_output=True, text=True, check=False
+        [sys.executable, str(SCRIPT), str(dist), str(pyproject)],
+        capture_output=True,
+        text=True,
+        check=False,
     )
 
 
@@ -41,10 +63,12 @@ def sdist_files(version: str = "1.2.3") -> list[str]:
     ]
 
 
-def write_wheel(dist: Path, names: list[str], version: str = "1.2.3") -> None:
+def write_wheel(
+    dist: Path, names: list[str], version: str = "1.2.3", metadata: str = METADATA
+) -> None:
     with zipfile.ZipFile(dist / f"permit_mcp-{version}-py3-none-any.whl", "w") as archive:
         for name in names:
-            archive.writestr(name, "")
+            archive.writestr(name, metadata if name.endswith(".dist-info/METADATA") else "")
 
 
 def write_sdist(dist: Path, names: list[str], version: str = "1.2.3") -> None:
@@ -58,6 +82,7 @@ def dist(tmp_path: Path) -> Path:
     path = tmp_path / "dist"
     path.mkdir()
     (path / ".gitignore").write_text("*")
+    (tmp_path / "pyproject.toml").write_text(PYPROJECT)
     return path
 
 
@@ -156,5 +181,86 @@ def test_a_corrupt_wheel_exits_2(dist: Path) -> None:
     assert "cannot read permit_mcp-1.2.3-py3-none-any.whl" in result.stdout
 
 
-def test_a_missing_directory_exits_2(tmp_path: Path) -> None:
-    assert check(tmp_path / "absent").returncode == 2
+def test_a_missing_directory_exits_2(dist: Path) -> None:
+    result = check(dist / "absent", dist.parent / "pyproject.toml")
+    assert result.returncode == 2
+    assert "expected one wheel and one sdist" in result.stdout
+
+
+@pytest.mark.parametrize(
+    ("planted", "message"),
+    [
+        (
+            METADATA.replace("Version: 1.2.3", "Version: 1.2.4"),
+            "declares Version ['1.2.4']; pyproject.toml declares version ['1.2.3']",
+        ),
+        (
+            METADATA.replace("Requires-Python: >=3.11", "Requires-Python: >=3.10"),
+            "declares Requires-Python ['>=3.10']",
+        ),
+        (
+            METADATA.replace("mcp>=2.2.0,<3", "mcp>=2.1.0,<3"),
+            "declares Requires-Dist ['mcp>=2.1.0,<3', 'aiohttp>=3.14.3,<4']",
+        ),
+        (
+            METADATA.replace("Requires-Dist: aiohttp>=3.14.3,<4\n", ""),
+            "declares Requires-Dist ['mcp>=2.2.0,<3']",
+        ),
+        (
+            METADATA.replace("Requires-Python", "Requires-Dist: httpx\nRequires-Python"),
+            "declares Requires-Dist ['mcp>=2.2.0,<3', 'aiohttp>=3.14.3,<4', 'httpx']",
+        ),
+    ],
+    ids=["version", "requires-python", "a floor", "a missing dependency", "an extra dependency"],
+)
+def test_metadata_that_differs_from_pyproject_fails(dist: Path, planted: str, message: str) -> None:
+    write_wheel(dist, wheel_files(), metadata=planted)
+    write_sdist(dist, sdist_files())
+    result = check(dist)
+    assert result.returncode == 1
+    assert message in result.stdout
+
+
+@pytest.mark.parametrize(
+    "pyproject",
+    [
+        None,
+        "not = [toml",
+        '[tool.uv]\nexclude-newer = "7 days"\n',
+        PYPROJECT.replace('requires-python = ">=3.11"\n', ""),
+    ],
+    ids=["missing", "not TOML", "no [project]", "no requires-python"],
+)
+def test_an_unreadable_pyproject_exits_2(dist: Path, pyproject: str | None) -> None:
+    path = dist.parent / "pyproject.toml"
+    if pyproject is None:
+        path.unlink()
+    else:
+        path.write_text(pyproject)
+    write_wheel(dist, wheel_files())
+    write_sdist(dist, sdist_files())
+    result = check(dist)
+    assert result.returncode == 2
+    assert "pyproject.toml" in result.stdout
+
+
+@pytest.mark.parametrize("argv", [[], ["dist"], ["dist", "pyproject.toml", "extra"]])
+def test_other_than_two_arguments_exits_2(argv: list[str]) -> None:
+    result = subprocess.run(
+        [sys.executable, str(SCRIPT), *argv], capture_output=True, text=True, check=False
+    )
+    assert result.returncode == 2
+    assert "usage: check_dist.py DIST_DIR PYPROJECT" in result.stderr
+
+
+def test_the_built_wheel_and_sdist_pass(tmp_path: Path) -> None:
+    """The artifacts `uv build` writes from this repository, as CI and the release build them."""
+    repo = SCRIPT.parents[2]
+    uv = shutil.which("uv")
+    assert uv is not None, "uv is not on PATH; uv run puts it there"
+    subprocess.run(
+        [uv, "build", "--no-sources", "--quiet", "--out-dir", str(tmp_path / "dist"), str(repo)],
+        check=True,
+    )
+    result = check(tmp_path / "dist", repo / "pyproject.toml")
+    assert result.returncode == 0, result.stdout

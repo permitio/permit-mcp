@@ -6,7 +6,7 @@ build-backend = "uv_build"
 
 [project]
 name = "permit-mcp"
-version = "0.1.0"
+version = "1.0.0"
 description = "MCP server for Permit.io access requests and operation approvals"
 readme = "README.md"
 requires-python = ">=3.11"

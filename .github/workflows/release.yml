@@ -1,0 +1,271 @@
+# Publishes permit-mcp to PyPI when a GitHub release is published. Each job needs
+# the one before it: the tag is checked against the version in pyproject.toml,
+# CI runs in full, the wheel and sdist are built once and checked, the runtime
+# dependency trees are scanned, and only then, once a reviewer approves the pypi
+# environment's deployment, the built files are uploaded. A failed or skipped job
+# leaves every later one unrun.
+name: Release
+
+# published, not created: created also fires when a draft is saved, published
+# only when a release is made public. workflow_dispatch is a dry run of every
+# job but publish, which runs on release events only, so the workflow can be
+# run end to end before a tag is cut.
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+
+permissions: {}
+
+# One run per tag (or branch, for a dry run) at a time; a second run waits.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: false
+
+defaults:
+  run:
+    shell: bash --noprofile --norc -euo pipefail {0}
+
+env:
+  # As in ci.yml; test_release.py checks that the two agree.
+  AUDIT_DIR: /tmp/audit
+  TRIVY_URL: https://github.com/aquasecurity/trivy/releases/download/v0.74.0/trivy_0.74.0_Linux-64bit.tar.gz
+  TRIVY_SHA256: 2ae6fe3ee734b7fdf11335663e18c75ea12dccc76062f09f164a3b0f8be4371a
+
+# Every setup-uv step installs the same uv, pinned by version and by the SHA-256
+# of uv-x86_64-unknown-linux-gnu.tar.gz from that uv release's sha256.sum, rather
+# than read from uv.lock: uv is the build backend of the published files (the
+# [build-system] bound on uv_build must allow it). It is the version uv.lock
+# pins; test_release.py fails when they differ. Change them together, by hand.
+# No cache anywhere: nothing restored from an earlier run may reach the release.
+jobs:
+  # The tag must be the whole string vMAJOR.MINOR.PATCH and name the version in
+  # pyproject.toml. [[ =~ ]] matches the whole string, where grep would pass a
+  # tag on the strength of one line. The tag reaches the shell through env, never
+  # through ${{ }}, and is printed quoted. A GitHub pre-release is refused:
+  # published fires for it too, and PyPI would get its version as a final
+  # release. The tagged commit must be on main, so a tag on an unmerged branch
+  # publishes nothing; the full-history checkout brings origin/main. On a dry
+  # run there is no tag, and the step only reports the version.
+  tag:
+    name: Check the tag
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7  # v10.2.0
+        with:
+          version: "0.12.19"
+          checksum: 23bf5552d220e0842b65c862097b2ebaeba0064b74eda5e565e77fd25969d8c8
+          enable-cache: false
+      # Exits 1 when the release is a pre-release, or its tag is not a version tag,
+      # names another version or is not on main, and 2 when the version or main
+      # cannot be read.
+      - name: Check the tag against the version
+        env:
+          EVENT: ${{ github.event_name }}
+          TAG: ${{ github.event.release.tag_name }}
+          PRERELEASE: ${{ github.event.release.prerelease }}
+        run: |
+          if ! version=$(uv version --short --frozen) || [[ -z $version ]]; then
+            echo "::error title=Release tag::Could not read the version from pyproject.toml."
+            exit 2
+          fi
+          if [[ $EVENT != release ]]; then
+            echo "::notice title=Dry run::Building and scanning ${version}; nothing is published."
+            exit 0
+          fi
+          if [[ $PRERELEASE != false ]]; then
+            echo "::error title=Release tag::The release is marked as a pre-release; PyPI would" \
+              "publish ${version} as final. Publish it as a full release."
+            exit 1
+          fi
+          if [[ ! $TAG =~ ^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$ ]]; then
+            printf -v quoted '%q' "$TAG"
+            echo "::error title=Release tag::The tag $quoted is not a version tag such as v1.2.3."
+            exit 1
+          fi
+          if [[ ${TAG#v} != "$version" ]]; then
+            echo "::error title=Release tag::The tag is $TAG, but pyproject.toml's version is" \
+              "${version}. Bump the version, or tag v${version}."
+            exit 1
+          fi
+          status=0
+          git merge-base --is-ancestor HEAD origin/main || status=$?
+          case $status in
+            0) ;;
+            1)
+              echo "::error title=Release tag::$TAG is not on main. Tag a commit of main."
+              exit 1
+              ;;
+            *)
+              echo "::error title=Release tag::Could not read origin/main."
+              exit 2
+              ;;
+          esac
+          echo "Releasing ${version} from ${TAG}, on main."
+
+  # The whole of ci.yml, on the tagged commit. A called workflow's jobs get at
+  # most what this job grants, and GitHub refuses the whole run when one asks for
+  # more, even a job the run skips; test_release.py checks that this job grants
+  # every permission a ci.yml job asks for. gate-dev-tree: false, since the
+  # release gates on the runtime trees only, here and in scan: a dev tool's
+  # advisory never reaches a user. ci.yml's live-spec drift check and notify run
+  # in CI's own runs only, so a dry run runs neither. zizmor's self-repository
+  # audit asks for GitHub's `$/` form of this path, which actionlint 1.7.12
+  # rejects; the ignore covers this line only.
+  ci:
+    name: CI
+    needs: tag
+    permissions:
+      contents: read
+    uses: ./.github/workflows/ci.yml  # zizmor: ignore[self-repository]
+    with:
+      gate-dev-tree: false
+
+  # Builds the wheel and sdist once; publish uploads these files. --no-sources
+  # builds as a consumer's resolver sees the project. check_dist.py fails a
+  # wheel or sdist that ships more or less than the package, or a wheel whose
+  # version, requires-python or dependencies differ from pyproject.toml's,
+  # which are the ranges the scan resolves.
+  build:
+    name: Build
+    needs: ci
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7  # v10.2.0
+        with:
+          version: "0.12.19"
+          checksum: 23bf5552d220e0842b65c862097b2ebaeba0064b74eda5e565e77fd25969d8c8
+          enable-cache: false
+      - name: Build
+        run: uv build --no-sources --out-dir dist
+      - name: Check the wheel and sdist
+        run: >-
+          uv run --no-project --python 3.11 python .github/scripts/check_dist.py
+          dist pyproject.toml
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
+        with:
+          name: dist
+          path: dist/
+          retention-days: 7
+          if-no-files-found: error
+
+  # Scans the runtime trees a consumer of the built wheel can install: the
+  # newest and the lowest versions its dependency ranges allow. check_dist.py
+  # proved the wheel's metadata equals pyproject.toml's, so scanning
+  # pyproject.toml's ranges is scanning the wheel's. The same scripts as
+  # ci.yml's audit job, but the gate here is the release's own, so it holds
+  # even if CI ever makes its audit advisory. The dev tree is in the summary
+  # only. Exits 1 on a fixable HIGH or CRITICAL advisory in a runtime tree,
+  # and 2 when a scan did not complete.
+  scan:
+    name: Scan the runtime dependencies
+    needs: build
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7  # v10.2.0
+        with:
+          version: "0.12.19"
+          checksum: 23bf5552d220e0842b65c862097b2ebaeba0064b74eda5e565e77fd25969d8c8
+          enable-cache: false
+      - name: Install Trivy
+        run: |
+          .github/scripts/fetch-binary.sh "$TRIVY_URL" "$TRIVY_SHA256" trivy "$RUNNER_TEMP/bin"
+          echo "$RUNNER_TEMP/bin" >>"$GITHUB_PATH"
+      - name: Scan the dependency trees
+        run: .github/scripts/audit-deps.sh "$AUDIT_DIR"
+      - name: Write the job summary
+        if: ${{ !cancelled() }}
+        run: >-
+          uv run --no-project --python 3.11 python .github/scripts/format_audit.py
+          --dir "$AUDIT_DIR" runtime-ceiling runtime-floor dev-ceiling
+          --context "the release's dependency ranges, resolved for Python 3.11"
+          >>"$GITHUB_STEP_SUMMARY"
+      - name: Gate on fixable HIGH and CRITICAL advisories in the runtime trees
+        run: |
+          status=0
+          uv run --no-project --python 3.11 python .github/scripts/format_audit.py \
+            --dir "$AUDIT_DIR" runtime-ceiling runtime-floor --annotations
+          uv run --no-project --python 3.11 python .github/scripts/format_audit.py \
+            --dir "$AUDIT_DIR" runtime-ceiling runtime-floor --gate || status=$?
+          case $status in
+            0) echo "No fixable HIGH or CRITICAL advisory in the runtime trees." ;;
+            1) echo "::error title=Release scan::Fixable HIGH or CRITICAL advisories in the" \
+              "runtime trees; see the job summary." ;;
+            *) echo "::error title=Release scan::The scan did not complete; see the job summary." ;;
+          esac
+          exit "$status"
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
+        if: ${{ !cancelled() }}
+        with:
+          name: release-dependency-audit
+          path: ${{ env.AUDIT_DIR }}/
+          retention-days: 90
+          if-no-files-found: warn
+
+  # PyPI trusted publishing: no PyPI token exists. PyPI accepts the upload
+  # because this repository, this workflow file (release.yml) and this
+  # environment (pypi) are registered as a trusted publisher of permit-mcp;
+  # renaming any of the three stops releases until the registration matches.
+  # PyPI does not check the ref, so what limits uploads to release tags is the
+  # pypi environment: a required reviewer, and deployments from v* tags only
+  # (CONTRIBUTING.md). The job downloads only the dist artifact build uploaded
+  # and scan's success admitted, and the action signs PEP 740 attestations with
+  # the same OIDC token. Dry runs skip it.
+  publish:
+    name: Publish to PyPI
+    needs: scan
+    if: github.event_name == 'release'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    environment:
+      name: pypi
+      url: https://pypi.org/project/permit-mcp/
+    permissions:
+      id-token: write  # the OIDC token PyPI exchanges for an upload token; signs attestations
+    steps:
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c  # v8.0.1
+        with:
+          name: dist
+          path: dist/
+      # Exactly the wheel and sdist of the tag's version go to PyPI, and nothing
+      # else. Exits 1 otherwise.
+      - name: Check the files to upload
+        env:
+          TAG: ${{ github.event.release.tag_name }}
+        run: |
+          shopt -s nullglob dotglob
+          files=(dist/*)
+          found=$(printf '%s\n' "${files[@]#dist/}" | LC_ALL=C sort)
+          version=${TAG#v}
+          expected=$(printf '%s\n' "permit_mcp-${version}-py3-none-any.whl" \
+            "permit_mcp-${version}.tar.gz" | LC_ALL=C sort)
+          if [[ $found != "$expected" ]]; then
+            echo "::error title=Publish::dist/ holds ${found//$'\n'/, }; expected" \
+              "${expected//$'\n'/, }."
+            exit 1
+          fi
+          echo "Uploading ${found//$'\n'/ and }."
+      # No password: with none given, the action authenticates by OIDC.
+      - uses: pypa/gh-action-pypi-publish@dc37677b2e1c63e2034f94d8a5b11f265b73ba33  # v1.14.2
+        with:
+          packages-dir: dist/
+          attestations: true

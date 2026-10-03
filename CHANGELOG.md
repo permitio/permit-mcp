@@ -13,6 +13,8 @@ The first release on PyPI. To upgrade from the 0.1 server, follow the
 - Runtime dependencies are aiohttp, mcp and pydantic. The Permit SDK, httpx, python-dotenv and
   aiosqlite are no longer dependencies.
 - Installs a `permit-mcp` command: `uvx permit-mcp`.
+- Published to PyPI by the release workflow with trusted publishing. Each file on PyPI carries
+  a PEP 740 attestation signed by that workflow.
 
 ### API
 
