@@ -983,7 +983,13 @@ def test_scan_reads_no_configuration_from_the_checkout(
     assert (tmp_path / "gitleaks.toml").read_text() == "[extend]\nuseDefault = true\n"
     ignore_path = Path(args[args.index("--gitleaks-ignore-path") + 1])
     assert ignore_path.is_dir()
-    assert not any(ignore_path.iterdir())
+    assert [entry.name for entry in ignore_path.iterdir()] == [".gitleaksignore"]
+    accepted = [
+        line.split()[0]
+        for line in (REPO_ROOT / ".github" / "gitleaks-accept.txt").read_text().splitlines()
+        if line.strip() and not line.lstrip().startswith("#")
+    ]
+    assert (ignore_path / ".gitleaksignore").read_text().split() == accepted
     assert {"--ignore-gitleaks-allow", "--redact", "--exit-code"} <= set(args)
     assert args[-1] == f"{tmp_path}/history.git", "the scan reads the mirror, not the checkout"
 
@@ -1112,6 +1118,80 @@ def test_the_pinned_gitleaks_finds_a_planted_token_despite_the_repository_s_supp
     assert completed.returncode == 1, completed.stdout + completed.stderr
     assert "RuleID:      github-pat" in completed.stdout
     assert "ghp_" not in completed.stdout, "findings are redacted"
+
+
+def checkout_with_accept_list(tmp_path: Path, text: str) -> Path:
+    checkout = tmp_path / "checkout"
+    (checkout / ".github").mkdir(parents=True)
+    (checkout / ".github" / "gitleaks-accept.txt").write_text(text)
+    return checkout
+
+
+FINGERPRINT = "0" * 40 + ":tests/x.py:generic-api-key:3"
+
+
+@pytest.mark.parametrize(
+    "line",
+    [
+        f"{FINGERPRINT}",
+        f"{FINGERPRINT}  #",
+        "tests/x.py:generic-api-key:3  # no commit",
+        "*  # all",
+    ],
+    ids=["no reason", "empty reason", "no commit", "wildcard"],
+)
+def test_an_accept_line_without_a_fingerprint_and_a_reason_exits_2(
+    workflow: dict[str, Any], tmp_path: Path, line: str
+) -> None:
+    checkout = checkout_with_accept_list(tmp_path, f"# comment\n\n{line}\n")
+    stand_in(
+        tmp_path / "bin",
+        "git",
+        'for arg in "$@"; do case $arg in rev-parse) echo false ;; rev-list) echo 3 ;; esac; done',
+    )
+    stand_in(tmp_path / "bin", "gitleaks", f"cat >&2 <<'OUT'\n{CLEAN_SCAN}\nOUT")
+    completed = run_step(workflow, GITLEAKS_STEP, tmp_path, {}, cwd=checkout)
+    assert completed.returncode == 2, completed.stdout + completed.stderr
+    assert "gitleaks-accept.txt:3 is not a fingerprint and a reason" in completed.stdout
+
+
+def commit_token(repo: Path, name: str) -> str:
+    """Commit a planted GitHub token in `name`; return its gitleaks fingerprint."""
+    alphabet = string.ascii_letters + string.digits
+    value = "ghp" + "_" + "".join(secrets.choice(alphabet) for _ in range(36))
+    (repo / name).write_text(f"token = {value}\n")
+    git(repo, "add", name)
+    git(repo, "commit", "--quiet", "-m", f"plant {name}")
+    head = subprocess.run(
+        [tool("git"), "-C", str(repo), "rev-parse", "HEAD"],
+        env={**GIT_ENV, "PATH": os.environ["PATH"]},
+        capture_output=True,
+        text=True,
+        check=True,
+    ).stdout.strip()
+    return f"{head}:{name}:github-pat:1"
+
+
+def test_an_accepted_fingerprint_hides_only_its_own_finding(
+    workflow: dict[str, Any], tmp_path: Path
+) -> None:
+    repo = planted_repo(tmp_path, token=False, suppressions=False)
+    first = commit_token(repo, "first.txt")
+    (repo / ".github").mkdir()
+    (repo / ".github" / "gitleaks-accept.txt").write_text(f"{first}  # planted for the test\n")
+    git(repo, "add", ".")
+    git(repo, "commit", "--quiet", "-m", "accept first")
+    accepted_only = run_real_scan(workflow, tmp_path, repo)
+    assert accepted_only.returncode == 0, accepted_only.stdout + accepted_only.stderr
+    assert f"Accepted as a false positive: {first}" in accepted_only.stdout
+
+    commit_token(repo, "second.txt")
+    second_run = tmp_path / "second-run"
+    second_run.mkdir()
+    completed = run_real_scan(workflow, second_run, repo)
+    assert completed.returncode == 1, completed.stdout + completed.stderr
+    assert "File:        second.txt" in completed.stdout
+    assert "File:        first.txt" not in completed.stdout
 
 
 # --- the API coverage report ----------------------------------------------------------

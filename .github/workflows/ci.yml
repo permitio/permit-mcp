@@ -699,11 +699,18 @@ jobs:
       # gitleaks reads a .gitleaksignore from the directory it scans whatever
       # --gitleaks-ignore-path says, so it scans a bare mirror of the history,
       # which has no working tree, with the ignore path an empty directory.
+      # The one exception is .github/gitleaks-accept.txt: exact fingerprints
+      # (commit:file:rule:line) of reviewed false positives, each with a reason.
+      # A fingerprint names one commit, so an entry can never hide a secret
+      # committed later, and every entry is printed as a notice.
       # gitleaks's own commit count depends on the git log format and can read
       # 0, so the proof that it ran is the mirror's commit count and the bytes
       # gitleaks reports. Exits 1 on a finding, and 2 when the checkout is
-      # shallow, the history is empty or nothing was scanned.
+      # shallow, the history is empty, nothing was scanned or the accept list
+      # has a line that is not a fingerprint and a reason.
       - name: Scan the history
+        env:
+          ACCEPT_LINE: '^([0-9a-f]{40}:[^:[:space:]]+:[a-z0-9-]+:[0-9]+)[[:space:]]+#[[:space:]]*[^[:space:]]'
         run: |
           if [[ $(git rev-parse --is-shallow-repository) != false ]]; then
             echo "::error title=gitleaks::The checkout is shallow, so the history is incomplete."
@@ -718,10 +725,25 @@ jobs:
           fi
           config="$RUNNER_TEMP/gitleaks.toml"
           printf '[extend]\nuseDefault = true\n' >"$config"
-          no_ignores="$RUNNER_TEMP/gitleaks-no-ignores"
-          mkdir -p "$no_ignores"
+          ignores="$RUNNER_TEMP/gitleaks-ignores"
+          mkdir -p "$ignores"
+          : >"$ignores/.gitleaksignore"
+          accept=.github/gitleaks-accept.txt
+          if [[ -f $accept ]]; then
+            line_no=0
+            while IFS= read -r line || [[ -n $line ]]; do
+              line_no=$((line_no + 1))
+              [[ $line =~ ^[[:space:]]*(#|$) ]] && continue
+              if [[ ! $line =~ $ACCEPT_LINE ]]; then
+                echo "::error title=gitleaks::${accept}:${line_no} is not a fingerprint and a reason."
+                exit 2
+              fi
+              echo "${BASH_REMATCH[1]}" >>"$ignores/.gitleaksignore"
+              echo "::notice title=gitleaks::Accepted as a false positive: ${line}"
+            done <"$accept"
+          fi
           status=0
-          "$RUNNER_TEMP/bin/gitleaks" git --config "$config" --gitleaks-ignore-path "$no_ignores" \
+          "$RUNNER_TEMP/bin/gitleaks" git --config "$config" --gitleaks-ignore-path "$ignores" \
             --ignore-gitleaks-allow --redact --no-banner --no-color --verbose --exit-code 1 \
             "$history" 2>&1 | tee "$RUNNER_TEMP/gitleaks.txt" || status=$?
           bytes=$(sed -nE 's/.* scanned ~([0-9]+) bytes.*/\1/p' "$RUNNER_TEMP/gitleaks.txt" |
