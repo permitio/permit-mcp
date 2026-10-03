@@ -47,6 +47,10 @@ The first release on PyPI. To upgrade from the 0.1 server, follow the
   HTTP session. Hosts use `MCPServer` instead of `FastMCP`. New exports: `Settings`,
   `ConfigError`, `IdentityResolver`, `IdentityError`, `bound_user`, `access_token_subject` and
   `TOOL_NAMES`. An unknown tool name in `exclude` raises `ValueError`.
+- `create_server()` takes the MCP SDK's `auth` settings and a `token_verifier`, and passes them
+  to `MCPServer`, which then answers HTTP 401 to a request without a valid bearer token. With a
+  `token_verifier` and no `identity`, each call acts as the subject of the caller's access token
+  (`access_token_subject()`) instead of `PERMIT_MCP_USER`.
 - A configuration error stops the `permit-mcp` command with exit status 2 and a message that
   names the variable.
 - The API key and Elements tokens are redacted from log records and error messages.

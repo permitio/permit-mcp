@@ -26,7 +26,7 @@ How the server learns the acting user depends on how it runs:
 | Deployment | Acting user |
 | --- | --- |
 | `permit-mcp` command over stdio | `PERMIT_MCP_USER`, for every call. One process serves one person. |
-| HTTP host with MCP authentication | `access_token_subject()`: the `subject` of the access token the host's `TokenVerifier` verified. |
+| HTTP host with MCP authentication | `access_token_subject()`: the `subject` of the access token the host's `TokenVerifier` verified. `create_server(auth=..., token_verifier=...)` uses it by default. |
 | Host that embeds the tools | The host's own identity resolver, an async function that returns the caller's Permit user key. |
 
 The access-request and operation-approval tools act in Permit as the acting user, so Permit
@@ -179,26 +179,23 @@ server = create_server(settings, exclude_tools={"approve_access_request"})
 server.run("stdio")
 ```
 
-### Tools on your own server
+### A server over HTTP with authentication
 
-`PermitTools(settings, identity).register(server, exclude=...)` adds the tools to a server you
-build. It returns the names it registered. The tools share one HTTP session to Permit; close it
-with `aclose()` when your server shuts down.
-
-This example runs over streamable HTTP with the MCP SDK's authentication. Your `TokenVerifier`
-verifies each request's bearer token, and the `subject` of the `AccessToken` it returns must be
-the caller's Permit user key. `access_token_subject()` makes each call act as that subject.
+`create_server(settings, auth=..., token_verifier=...)` passes the MCP SDK's authentication
+settings and your `TokenVerifier` to `MCPServer`. The server then answers HTTP 401 to a request
+without a bearer token your verifier accepts, before any tool runs or anything is sent to Permit.
+Without `identity=`, each call acts as the `subject` of the `AccessToken` your verifier returned
+(`access_token_subject()`), so that subject must be the caller's Permit user key, and
+`settings.user` is not used. An explicit `identity=` replaces the token's subject for every
+caller: pass `identity=bound_user(...)` with a verifier only when every authenticated caller
+should act as one shared Permit user.
 
 ```python
-import contextlib
-from collections.abc import AsyncIterator
-
 from mcp.server.auth.provider import AccessToken
 from mcp.server.auth.settings import AuthSettings
-from mcp.server.mcpserver import MCPServer
 from pydantic import AnyHttpUrl
 
-from permit_mcp import PermitTools, Settings, access_token_subject
+from permit_mcp import Settings, create_server
 
 
 class MyTokenVerifier:
@@ -207,7 +204,37 @@ class MyTokenVerifier:
         ...  # subject: the caller's Permit user key; resource: the URL it was issued for
 
 
-tools = PermitTools(Settings.from_env(), access_token_subject())
+server = create_server(
+    Settings.from_env(),
+    auth=AuthSettings(
+        issuer_url=AnyHttpUrl("https://auth.example.com"),
+        resource_server_url=AnyHttpUrl("https://mcp.example.com/mcp"),
+        validate_token_resource=True,
+    ),
+    token_verifier=MyTokenVerifier(),
+    exclude_tools={"approve_access_request", "deny_access_request"},
+)
+server.run("streamable-http")
+```
+
+`MCPServer` raises `ValueError` for `auth` without `token_verifier`, and for `token_verifier`
+without `auth`.
+
+### Tools on your own server
+
+`PermitTools(settings, identity).register(server, exclude=...)` adds the tools to a server you
+build. It returns the names it registered. The tools share one HTTP session to Permit; close it
+with `aclose()` when your server shuts down.
+
+```python
+import contextlib
+from collections.abc import AsyncIterator
+
+from mcp.server.mcpserver import MCPServer
+
+from permit_mcp import PermitTools, Settings, bound_user
+
+tools = PermitTools(Settings.from_env(), bound_user("alice"))
 
 
 @contextlib.asynccontextmanager
@@ -218,18 +245,9 @@ async def lifespan(_server: MCPServer[None]) -> AsyncIterator[None]:
         await tools.aclose()
 
 
-server = MCPServer(
-    "my-app",
-    token_verifier=MyTokenVerifier(),
-    auth=AuthSettings(
-        issuer_url=AnyHttpUrl("https://auth.example.com"),
-        resource_server_url=AnyHttpUrl("https://mcp.example.com/mcp"),
-        validate_token_resource=True,
-    ),
-    lifespan=lifespan,
-)
+server = MCPServer("my-app", lifespan=lifespan)
 tools.register(server, exclude={"approve_access_request", "deny_access_request"})
-server.run("streamable-http")
+server.run("stdio")
 ```
 
 Over streamable HTTP the lifespan runs once per process. Some transports (SSE, in-memory clients)
@@ -268,7 +286,7 @@ server = create_server(settings, identity=resolve)
 server.run("stdio")
 ```
 
-`settings.user` is not used when you pass a resolver.
+`settings.user` is not used when you pass a resolver or a `token_verifier`.
 
 ## Errors
 
@@ -278,7 +296,9 @@ server.run("stdio")
   key or the value of a URL. When a 0.1 variable such as `RESOURCE_KEY` is set, the server logs
   one warning that names its replacement.
 - **Bad arguments in code.** `register()` and `create_server()` raise `ValueError` for an excluded
-  tool name that does not exist. `Settings.from_env()` raises `TypeError` for an unknown setting.
+  tool name that does not exist. `create_server()` passes on the `ValueError` of `MCPServer` for
+  `auth` without `token_verifier`, or `token_verifier` without `auth`. `Settings.from_env()`
+  raises `TypeError` for an unknown setting.
 - **Tool calls.** A failed call returns a tool error to the model:
   - `The caller could not be identified, so nothing was sent to Permit: ...` when the resolver
     fails;

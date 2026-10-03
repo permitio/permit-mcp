@@ -154,6 +154,18 @@
             "default": "()",
             "kind": "keyword-only",
             "name": "exclude_tools"
+          },
+          {
+            "annotation": "AuthSettings | None",
+            "default": "None",
+            "kind": "keyword-only",
+            "name": "auth"
+          },
+          {
+            "annotation": "TokenVerifier | None",
+            "default": "None",
+            "kind": "keyword-only",
+            "name": "token_verifier"
           }
         ],
         "return": "MCPServer[Any]"

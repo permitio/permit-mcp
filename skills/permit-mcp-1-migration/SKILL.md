@@ -236,7 +236,8 @@ tools.register(server, exclude={"create_access_request", "create_operation_appro
 ```
 
 Or let `create_server(settings, identity=resolve, exclude_tools={...})` build the server with
-the lifespan included. Without `identity=`, it acts as `PERMIT_MCP_USER`. Use
+the lifespan included. Without `identity=`, it acts as the access token's `subject` when it
+is given the host's `auth=` and `token_verifier=`, and as `PERMIT_MCP_USER` otherwise. Use
 `access_token_subject()` or `bound_user("<key>")` in place of `resolve` when step 2 chose them.
 
 Also:

@@ -44,6 +44,7 @@ permit-mcp = "permit_mcp.server:main"
 [dependency-groups]
 # Exact pins: uv.lock is the single source of these tool versions.
 dev = [
+    "httpx2==2.13.1",
     "mutmut==3.8.0",
     "mypy==2.3.1",
     "prek==0.5.3",

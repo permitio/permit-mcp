@@ -6,11 +6,13 @@ from collections.abc import AsyncIterator, Collection
 from importlib.metadata import version
 from typing import Any
 
+from mcp.server.auth.provider import TokenVerifier
+from mcp.server.auth.settings import AuthSettings
 from mcp.server.mcpserver import MCPServer
 
 from permit_mcp._log import configure_cli_logging, scrub
 from permit_mcp.config import ENV_VARS, ConfigError, Settings
-from permit_mcp.identity import IdentityResolver, bound_user
+from permit_mcp.identity import IdentityResolver, access_token_subject, bound_user
 from permit_mcp.tools import PermitTools
 
 SERVER_NAME = "permit"
@@ -22,14 +24,23 @@ def create_server(
     *,
     identity: IdentityResolver | None = None,
     exclude_tools: Collection[str] = (),
+    auth: AuthSettings | None = None,
+    token_verifier: TokenVerifier | None = None,
 ) -> MCPServer[Any]:
     """Build an MCP server with the Permit tools registered.
 
     Args:
         settings: The settings; read with `Settings.from_env()` when None.
         identity: Returns the Permit user key of each tool call's caller. When None, every
-            call acts as `settings.user` (`PERMIT_MCP_USER`).
+            call acts as the subject of the caller's verified access token
+            (`access_token_subject()`) if `token_verifier` is given, and as `settings.user`
+            (`PERMIT_MCP_USER`) otherwise.
         exclude_tools: Names of tools to leave out.
+        auth: The MCP SDK's authentication settings, for a server run over HTTP. Passed to
+            `MCPServer` as they are; give `token_verifier` with them.
+        token_verifier: Verifies each HTTP request's bearer token. Passed to `MCPServer`,
+            which refuses a request without a valid token before any tool runs. The
+            `subject` of the `AccessToken` it returns is the caller's Permit user key.
 
     Returns:
         The server. The MCP SDK enters its lifespan once per connection for some transports
@@ -38,25 +49,31 @@ def create_server(
         one.
 
     Raises:
-        ConfigError: The settings are invalid, or neither `identity` nor `settings.user`
-            says who the tools act as.
-        ValueError: `exclude_tools` names a tool that does not exist.
+        ConfigError: The settings are invalid, or none of `identity`, `token_verifier` and
+            `settings.user` says who the tools act as.
+        ValueError: `exclude_tools` names a tool that does not exist, or `MCPServer` refuses
+            `auth` and `token_verifier`: `auth` without `token_verifier`, or
+            `token_verifier` without `auth`.
 
     """
     if settings is None:
         settings = Settings.from_env()
-    if identity is None:
-        if settings.user is None:
-            msg = (
-                f"Set {ENV_VARS['user']} to the Permit user key this server acts as: every "
-                "tool call is made as that user. A host that identifies each caller passes "
-                "identity= to create_server() instead."
-            )
-            raise ConfigError(msg)
+    if identity is not None:
+        acting = "the Permit user this server identifies the caller as"
+    elif token_verifier is not None:
+        identity = access_token_subject()
+        acting = "the Permit user named by the subject of the caller's verified access token"
+    elif settings.user is not None:
         identity = bound_user(settings.user)
         acting = f"the Permit user '{settings.user}'"
     else:
-        acting = "the Permit user this server identifies the caller as"
+        msg = (
+            f"Set {ENV_VARS['user']} to the Permit user key this server acts as: every "
+            "tool call is made as that user. A host that identifies each caller passes "
+            "identity= to create_server() instead, or token_verifier= and auth= to act as "
+            "the subject of each caller's access token."
+        )
+        raise ConfigError(msg)
 
     tools = PermitTools(settings, identity)
     open_lifespans = 0
@@ -86,6 +103,8 @@ def create_server(
         ),
         version=version("permit-mcp"),
         lifespan=lifespan,
+        auth=auth,
+        token_verifier=token_verifier,
     )
     tools.register(server, exclude=exclude_tools)
     return server

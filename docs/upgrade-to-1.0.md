@@ -136,7 +136,9 @@ tools.register(server, exclude={"create_access_request", "create_operation_appro
 ```
 
 Or let `create_server(settings, identity=resolve, exclude_tools=...)` build the server, with the
-lifespan included. The
+lifespan included. A host that runs over HTTP with the MCP SDK's authentication also passes its
+`auth=` and `token_verifier=`; without `identity=`, each call then acts as the access token's
+`subject`. The
 [README](https://github.com/permitio/permit-mcp/blob/main/README.md#embedding-the-tools) has
 complete examples, including one over HTTP with a `TokenVerifier`.
 

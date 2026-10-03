@@ -58,6 +58,7 @@ def access_token_subject() -> IdentityResolver:
 
     For a server run over HTTP with the MCP SDK's authentication (a `TokenVerifier` and
     `AuthSettings`): the verifier's `AccessToken.subject` must be the caller's Permit user key.
+    `create_server()` uses it when given a `token_verifier` and no `identity`.
 
     Returns:
         The resolver. It raises `IdentityError` when the request has no verified access
