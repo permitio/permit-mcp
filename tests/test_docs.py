@@ -1,18 +1,21 @@
-"""The README and the upgrade guide match the code.
+"""The README, the upgrade guide and the changelog match the code.
 
 The README's tools table matches the registered tools, its configuration table matches the
 settings `Settings.from_env` reads and their defaults, and every Python block of both documents
-type-checks.
+type-checks. What CHANGELOG.md says of the tools' output schemas matches the surface snapshot,
+which tests/test_surface.py keeps equal to the code.
 """
 
 from __future__ import annotations
 
+import copy
 import dataclasses
+import json
 import re
 import subprocess
 import sys
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 import pytest
 from mcp.client import Client
@@ -26,6 +29,17 @@ if TYPE_CHECKING:
 ROOT = Path(__file__).resolve().parent.parent
 README = ROOT / "README.md"
 UPGRADE_GUIDE = ROOT / "docs" / "upgrade-to-1.0.md"
+CHANGELOG = ROOT / "CHANGELOG.md"
+SURFACE_SNAPSHOT = ROOT / "tests" / "snapshots" / "surface.json"
+REQUESTER_FIELDS = (
+    "requesting_user_email",
+    "requesting_user_first_name",
+    "requesting_user_last_name",
+)
+OUTPUT_SCHEMA_CLAIM = (
+    "Each tool lists an output schema; list items are Permit's own objects, which carry"
+    " `requesting_user_email`, `requesting_user_first_name` and `requesting_user_last_name`."
+)
 TOOLS_HEADER = "| Tool | Description |"
 CONFIG_HEADER = "| Variable | Default | Meaning |"
 # The settings the README's tool descriptions are shown with.
@@ -124,6 +138,42 @@ def config_table_problems(text: str, defaults: Mapping[str, object]) -> list[str
                 f"{variable}: the README's default is {row[1]!r}, expected {expected!r}"
             )
     return problems
+
+
+def output_schema_problems(changelog: str, tools: Mapping[str, Any]) -> list[str]:
+    """Check the changelog's output-schema sentence against the snapshot's tools.
+
+    Every tool has an output schema. A list tool (one whose `data` is an array) gives its
+    items no schema, since they are Permit's own objects, and its `data` description names
+    each requester field.
+    """
+    problems: list[str] = []
+    if OUTPUT_SCHEMA_CLAIM not in " ".join(changelog.split()):
+        problems.append(f"CHANGELOG.md does not say: {OUTPUT_SCHEMA_CLAIM}")
+    list_tools = 0
+    for name, tool in sorted(tools.items()):
+        schema = tool.get("output_schema")
+        if not schema:
+            problems.append(f"{name} lists no output schema")
+            continue
+        data = schema.get("properties", {}).get("data", {})
+        if data.get("type") != "array":
+            continue
+        list_tools += 1
+        if data.get("items") != {}:
+            problems.append(f"{name}: its list items have a schema, not Permit's objects as is")
+        description = data.get("description", "")
+        missing = [field for field in REQUESTER_FIELDS if field not in description]
+        if missing:
+            problems.append(f"{name}: its data description does not name {', '.join(missing)}")
+    if list_tools == 0:
+        problems.append("no tool returns a list in data")
+    return problems
+
+
+def snapshot_tools() -> dict[str, Any]:
+    tools: dict[str, Any] = json.loads(SURFACE_SNAPSHOT.read_text(encoding="utf-8"))["tools"]
+    return tools
 
 
 def python_blocks(text: str) -> list[str]:
@@ -314,3 +364,64 @@ def test_type_check_fails_on_a_wrong_block(tmp_path: Path, mypy_cache: Path) -> 
     status, output = run_mypy({"wrong": wrong}, tmp_path, mypy_cache)
     assert status != 0
     assert "wrong.py" in output
+
+
+def test_the_changelog_s_output_schema_sentence_matches_the_snapshot() -> None:
+    changelog = CHANGELOG.read_text(encoding="utf-8")
+    assert output_schema_problems(changelog, snapshot_tools()) == []
+
+
+def _items_with_a_schema(tools: dict[str, Any]) -> None:
+    tools["list_access_requests"]["output_schema"]["properties"]["data"]["items"] = {
+        "properties": {field: {"type": "string"} for field in REQUESTER_FIELDS},
+        "type": "object",
+    }
+
+
+def _description_without_a_field(tools: dict[str, Any]) -> None:
+    data = tools["list_operation_approvals"]["output_schema"]["properties"]["data"]
+    data["description"] = data["description"].replace("requesting_user_last_name", "the name")
+
+
+def _no_output_schema(tools: dict[str, Any]) -> None:
+    del tools["check_permission"]["output_schema"]
+
+
+def _no_list_tool(tools: dict[str, Any]) -> None:
+    for name in ("list_access_requests", "list_operation_approvals"):
+        del tools[name]
+
+
+@pytest.mark.parametrize(
+    ("change", "problem"),
+    [
+        (_items_with_a_schema, "list_access_requests: its list items have a schema"),
+        (
+            _description_without_a_field,
+            (
+                "list_operation_approvals: its data description does not name"
+                " requesting_user_last_name"
+            ),
+        ),
+        (_no_output_schema, "check_permission lists no output schema"),
+        (_no_list_tool, "no tool returns a list in data"),
+    ],
+)
+def test_output_schema_check_fails_when_the_snapshot_differs(
+    change: Callable[[dict[str, Any]], None], problem: str
+) -> None:
+    tools = copy.deepcopy(snapshot_tools())
+    change(tools)
+    problems = output_schema_problems(CHANGELOG.read_text(encoding="utf-8"), tools)
+    assert len(problems) == 1
+    assert problems[0].startswith(problem)
+
+
+def test_output_schema_check_fails_on_the_old_changelog_sentence() -> None:
+    old = "Each tool lists an output schema with these fields, so clients can read its structured"
+    changelog = CHANGELOG.read_text(encoding="utf-8").replace(
+        "Each tool lists an output schema;", f"{old} result. Gone:"
+    )
+    assert output_schema_problems(changelog, snapshot_tools()) == [
+        f"CHANGELOG.md does not say: {OUTPUT_SCHEMA_CLAIM}"
+    ]

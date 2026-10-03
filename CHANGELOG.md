@@ -37,8 +37,8 @@ The first release on PyPI. To upgrade from the 0.1 server, follow the
   Permit returns it, instead of a sentence. The list tools return Permit's paginated object as
   it is, and no longer add `requesting_user` to each item: Permit's items carry the requesting
   user's `requesting_user_email`, `requesting_user_first_name` and `requesting_user_last_name`.
-  Each tool lists an output schema with these fields, so clients can read its structured
-  result.
+  Each tool lists an output schema; list items are Permit's own objects, which carry
+  `requesting_user_email`, `requesting_user_first_name` and `requesting_user_last_name`.
 - Tool arguments are validated: `page` is at least 1, `per_page` is 1 to 100, `status` is one of
   pending, approved, denied or canceled. `list_resource_instances` returns 30 results per page by
   default, instead of 100.
