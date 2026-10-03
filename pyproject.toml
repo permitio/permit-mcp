@@ -141,4 +141,4 @@ exclude-newer = "7 days"
 [tool.mutmut]
 source_paths = ["src/permit_mcp"]
 pytest_add_cli_args_test_selection = ["tests", "--ignore=tests/test_migration_skill.py"]
-also_copy = ["README.md", "docs"]
+also_copy = ["README.md", "docs", "mkdocs.yml", "scripts"]
