@@ -2,8 +2,9 @@
 # the one before it: the tag is checked against the version in pyproject.toml,
 # CI runs in full, the wheel and sdist are built once and checked, the runtime
 # dependency trees are scanned, and only then, once a reviewer approves the pypi
-# environment's deployment, the built files are uploaded. A failed or skipped job
-# leaves every later one unrun.
+# environment's deployment, the built files are uploaded; then the API reference
+# site of the release is published (pages.yml). A failed or skipped job leaves
+# every later one unrun.
 name: Release
 
 # published, not created: created also fires when a draft is saved, published
@@ -167,8 +168,8 @@ jobs:
   # proved the wheel's metadata equals pyproject.toml's, so scanning
   # pyproject.toml's ranges is scanning the wheel's. The same scripts as
   # ci.yml's audit job, but the gate here is the release's own, so it holds
-  # even if CI ever makes its audit advisory. The dev tree is in the summary
-  # only. Exits 1 on a fixable HIGH or CRITICAL advisory in a runtime tree,
+  # even if CI ever makes its audit advisory. The dev and docs trees are in
+  # the summary only. Exits 1 on a fixable HIGH or CRITICAL advisory in a runtime tree,
   # and 2 when a scan did not complete.
   scan:
     name: Scan the runtime dependencies
@@ -196,7 +197,7 @@ jobs:
         if: ${{ !cancelled() }}
         run: >-
           uv run --no-project --python 3.11 python .github/scripts/format_audit.py
-          --dir "$AUDIT_DIR" runtime-ceiling runtime-floor dev-ceiling
+          --dir "$AUDIT_DIR" runtime-ceiling runtime-floor dev-ceiling docs-ceiling
           --context "the release's dependency ranges, resolved for Python 3.11"
           >>"$GITHUB_STEP_SUMMARY"
       - name: Gate on fixable HIGH and CRITICAL advisories in the runtime trees
@@ -269,3 +270,18 @@ jobs:
         with:
           packages-dir: dist/
           attestations: true
+
+  # Publishes the API reference site of the release, once the release is on
+  # PyPI: pages.yml builds it from the tag and deploys it to GitHub Pages. A
+  # called workflow's jobs get at most what this job grants, and GitHub refuses
+  # the whole run when one asks for more; test_release.py checks that this job
+  # grants exactly what pages.yml's jobs ask for. Dry runs skip it, as they skip
+  # publish.
+  docs:
+    name: Publish the API reference
+    needs: publish
+    permissions:
+      contents: read  # pages.yml's build: the checkout and gh release view
+      pages: write  # pages.yml's deploy, and build's configure-pages (read)
+      id-token: write  # pages.yml's deploy: deploy-pages's OIDC token
+    uses: ./.github/workflows/pages.yml  # zizmor: ignore[self-repository]

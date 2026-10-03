@@ -42,6 +42,9 @@ job, and how to take a dependency release younger than the 7-day cooldown. In sh
   own declares it with `tests.api_record.note_origin`. See CONTRIBUTING.md.
 - **README and upgrade-guide Python blocks are type-checked** by `tests/test_docs.py`. Mark a
   block that shows 0.1 code with `<!-- docs-check: skip, 0.1 code -->` on the line before it.
+- **API reference site.** A new export of `permit_mcp` needs a `:::` entry in
+  `docs/reference/api.md` (`tests/test_docs_pages.py`). The CI `docs` job fails on any docs
+  build warning, including a docstring Griffe cannot parse. See CONTRIBUTING.md.
 - **New CI jobs** go into the `needs` of the `CI` job in `.github/workflows/ci.yml`, and
   `EXPECTED_JOBS` changes to match (see CONTRIBUTING.md). The `prek` job fails otherwise.
 - **Offline tests never skip.** CI fails a run in which a test skipped or none ran. Do not add

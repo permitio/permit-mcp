@@ -36,6 +36,7 @@ Homepage = "https://github.com/permitio/permit-mcp"
 Repository = "https://github.com/permitio/permit-mcp"
 Issues = "https://github.com/permitio/permit-mcp/issues"
 Documentation = "https://docs.permit.io/ai-security/access-request-mcp/overview"
+Reference = "https://permitio.github.io/permit-mcp/"
 
 [project.scripts]
 permit-mcp = "permit_mcp.server:main"
@@ -52,6 +53,12 @@ dev = [
     "typos==1.50.3",
     "uv==0.12.19",
     "werkzeug==3.1.8",
+]
+# The API reference site (mkdocs.yml). Not installed by `uv sync`; see CONTRIBUTING.md.
+docs = [
+    "mkdocstrings==1.0.6",
+    "mkdocstrings-python==2.0.9",
+    "zensical==0.0.65",
 ]
 
 [tool.pytest]
@@ -94,6 +101,8 @@ ban-relative-imports = "all"
 "tests/**/*.py" = ["S101", "D1", "PLR2004", "TID251"]
 # A command-line script run by path: printing is its interface, and it is not in a package.
 "skills/*/scripts/*.py" = ["T201", "INP001"]
+# Run by path to write the docs site's generated pages; not in a package.
+"scripts/*.py" = ["INP001"]
 
 [tool.ruff.per-file-target-version]
 # The migration scanner runs on the project being migrated, which 0.1 allowed on Python 3.10.
@@ -101,7 +110,7 @@ ban-relative-imports = "all"
 
 [tool.mypy]
 python_version = "3.11"
-files = ["src", "tests", "skills"]
+files = ["src", "tests", "skills", "scripts"]
 strict = true
 warn_unreachable = true
 enable_error_code = [

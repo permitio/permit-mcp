@@ -1,7 +1,8 @@
 # Upgrading from 0.1 to 1.0
 
 Version 0.1 was run from a clone of this repository. Version 1.0 is published on PyPI as
-`permit-mcp`. This guide lists what to change. The [changelog](../CHANGELOG.md) lists every change.
+`permit-mcp`. This guide lists what to change. The
+[changelog](https://github.com/permitio/permit-mcp/blob/main/CHANGELOG.md) lists every change.
 
 ## Who the acting user is
 
@@ -135,8 +136,9 @@ tools.register(server, exclude={"create_access_request", "create_operation_appro
 ```
 
 Or let `create_server(settings, identity=resolve, exclude_tools=...)` build the server, with the
-lifespan included. The [README](../README.md#embedding-the-tools) has complete examples,
-including one over HTTP with a `TokenVerifier`.
+lifespan included. The
+[README](https://github.com/permitio/permit-mcp/blob/main/README.md#embedding-the-tools) has
+complete examples, including one over HTTP with a `TokenVerifier`.
 
 Other changes for embedders:
 
@@ -144,5 +146,6 @@ Other changes for embedders:
 - `check_permission`, `cancel_access_request` and `cancel_operation_approval` are new. Exclude
   them if your application should not offer them.
 - Tools whose element is not set are not registered.
-- Tool results are JSON objects; see the [changelog](../CHANGELOG.md#api).
+- Tool results are JSON objects; see the
+  [changelog](https://github.com/permitio/permit-mcp/blob/main/CHANGELOG.md#api).
 - Remove any `user_id` your own code passed to the tools.

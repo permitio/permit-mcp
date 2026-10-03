@@ -40,6 +40,49 @@ uv run --locked --only-dev pytest -c .github/scripts/pytest.ini -q .github/scrip
   tool, change a tool's first sentence, or add or change a setting, update the README. A block
   that shows 0.1 code is marked with `<!-- docs-check: skip, 0.1 code -->` on the line before it.
 
+## The API reference site
+
+<https://permitio.github.io/permit-mcp/> is built from `mkdocs.yml` with
+[Zensical](https://zensical.org) and mkdocstrings-python, which the `docs` dependency group pins.
+It holds the README, the upgrade guide, the embedding API rendered from the docstrings
+(`docs/reference/api.md`), and a Tools page that `scripts/docs_pages.py` writes from the tools a
+real server lists, along with `llms.txt`. Guides stay on
+[docs.permit.io](https://docs.permit.io/ai-security/access-request-mcp/overview).
+
+```shell
+uv run --group docs python scripts/docs_pages.py   # write the Tools page and llms.txt
+uv run --group docs zensical serve                 # preview at http://localhost:8000
+.github/scripts/build-docs.sh                      # the CI check: build into site/
+```
+
+`build-docs.sh` fails when `docs_pages.py` sees other tools than `TOOL_NAMES`, and on any line
+a clean build does not print. That takes in Griffe's warnings about a docstring it cannot parse,
+which `zensical build --strict` prints but lets pass, as well as unresolved cross-references and
+broken links or anchors. It builds with `--clean`, because a cached build does not repeat the
+warnings of the pages it reuses. Zensical ignores the nav and absolute-link settings of
+`validation` in `mkdocs.yml`, and drops a page whose snippet include is missing without a word,
+so `.github/scripts/check_site.py` then checks what was built: every `nav` page has its HTML
+file, every Markdown file in `docs/` is in `nav`, no `href` or `src` starts with `/` outside the
+site's path (`/permit-mcp/`), and every `--8<--` include names a file that exists.
+
+The config stays in `mkdocs.yml` so that MkDocs with Material for MkDocs can build the site if
+Zensical cannot. When you add a page, add it to `nav` in `mkdocs.yml` and to `PAGES` in
+`scripts/docs_pages.py`; `tests/test_docs_pages.py` checks that they match, and that the API
+page documents every name the package exports.
+
+`.github/workflows/pages.yml` builds the site the same way and deploys it. `release.yml` calls it
+once a release is on PyPI (its `docs` job needs `publish`). Running it by hand (Actions, Pages,
+Run workflow, on a tag) redeploys a release's site. Either way its first step fails unless the
+ref is a tag that is the whole string `vX.Y.Z` and names a published release that is not a
+pre-release, so it never deploys from a branch, a draft or a pre-release. Before the first
+release, a repository owner must:
+
+1. In Settings, Pages, set the source to "GitHub Actions". That creates the `github-pages`
+   environment with a deployment rule for the default branch.
+2. In Settings, Environments, `github-pages`, under deployment branches and tags, REMOVE that
+   default-branch rule, and add the one tag rule `v*`. No other rule: the site deploys from
+   release tags only.
+
 ## What CI runs
 
 The `CI` check passes only when every job below succeeded. `dependency-review` runs on pull
@@ -50,7 +93,8 @@ requests only.
 | `prek` | `uv run --locked --only-dev prek run --all-files`, with a count of the hooks that passed, and a check that `CI` needs every job |
 | `tests` | `python -m pytest -q -W error` on Python 3.11 to 3.14, installed from the ranges in `pyproject.toml` at their newest (`highest`) and lowest (`lowest-direct`) versions, and on 3.13 from `uv.lock` (`uv sync --locked`); then a check that no test skipped. The `uv.lock` leg also runs the API coverage report (below) |
 | `package` | `uv build --no-sources`, a check of the wheel and sdist contents and of the wheel's metadata against `pyproject.toml` (`check_dist.py`, as the release runs it), and the `permit-mcp` command from the installed wheel, which must exit 2 without configuration |
-| `audit` | Trivy on the runtime dependency trees (newest and lowest) and the dev tree; fails on a fixable HIGH or CRITICAL advisory. In the run `release.yml` calls, the dev tree is reported but does not fail it (the `gate-dev-tree` input) |
+| `docs` | `.github/scripts/build-docs.sh`: builds the API reference site, fails on any warning, and checks what was built with `check_site.py` (see [the API reference site](#the-api-reference-site)) |
+| `audit` | Trivy on the runtime dependency trees (newest and lowest), the dev tree and the docs tree (the `docs` group); fails on a fixable HIGH or CRITICAL advisory. In the run `release.yml` calls, the dev and docs trees are reported but do not fail it (the `gate-dev-tree` input) |
 | `audit-scripts` | `uv run --locked --only-dev pytest -c .github/scripts/pytest.ini -q .github/scripts` |
 | `dependency-review` | GitHub's dependency review; fails a pull request that adds a dependency or action with a HIGH or CRITICAL advisory |
 | `workflow-hardening` | actionlint, and zizmor with its online audits |
@@ -160,19 +204,20 @@ it, so a failure stops the release before anything is uploaded.
 | Job | What it does |
 | --- | --- |
 | `tag` | Fails a pre-release, a tag other than the whole string `v` + the version in `pyproject.toml` (such as `v1.2.3`), and a tag whose commit is not on `main` |
-| `CI` | Runs `ci.yml` in full on the tagged commit, with `gate-dev-tree: false`: a dev-tree advisory is reported but does not hold up a release |
+| `CI` | Runs `ci.yml` in full on the tagged commit, with `gate-dev-tree: false`: an advisory in the dev or docs tree is reported but does not hold up a release |
 | `build` | `uv build --no-sources` once, with uv pinned by version and checksum and no cache, then `check_dist.py`: the files ship the package and nothing else, and the wheel declares the version, `requires-python` and dependencies of `pyproject.toml` |
 | `scan` | `audit-deps.sh`; fails on a fixable HIGH or CRITICAL advisory in the runtime trees (newest and lowest versions) |
 | `publish` | Waits for a reviewer to approve the `pypi` environment, checks that the `dist` artifact `build` uploaded holds exactly the tag's wheel and sdist, and uploads them with PEP 740 attestations |
+| `docs` | Runs `pages.yml`: builds the API reference site from the tag and deploys it to GitHub Pages (see [the API reference site](#the-api-reference-site)) |
 
 Running the workflow by hand (Actions, Release, Run workflow) is a dry run: every job but
 `publish`, which runs on release events only. In a called run `github.workflow` is the
 caller's name, so `ci.yml`'s live-spec drift check and Slack notification, which run when it is
 `CI`, do not run in a release or a dry run.
 
-`release.yml` calls `ci.yml`, and GitHub refuses the whole release run when a `ci.yml` job asks
-for a permission the release's `ci` job does not grant. `test_release.py` fails when one is
-missing. The uv version in `release.yml` is the one `uv.lock` pins; change them together.
+`release.yml` calls `ci.yml` and `pages.yml`, and GitHub refuses the whole release run when a
+called job asks for a permission the calling job does not grant. `test_release.py` fails when
+one is missing, and when the `docs` job grants more than `pages.yml` asks for. The uv version in `release.yml` is the one `uv.lock` pins; change them together.
 
 ### Cutting a release
 
@@ -208,6 +253,8 @@ Done once by a repository owner, outside this repository:
 - **The `pypi` environment** (Settings, Environments): required reviewers (the maintainers),
   with self-review prevented and administrator bypass off; deployment branches and tags set to
   selected ones, with the one tag rule `v*`. It holds no secrets.
+- **GitHub Pages and the `github-pages` environment**: see
+  [the API reference site](#the-api-reference-site).
 - **A release-tag ruleset** (Settings, Rules, Rulesets, new tag ruleset): active, targeting
   `v*`, restricting creations, updates and deletions, with the maintainers on the bypass list.
   Only they can create, move or delete a version tag.

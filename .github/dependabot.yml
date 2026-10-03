@@ -29,6 +29,10 @@ updates:
       # run, must not hold up the runtime updates.
       lint-tools:
         patterns: ["ruff", "mypy", "typos", "prek"]
+      # The docs site's builder; Zensical 0.0.x can change its output in any
+      # release, and the docs job fails on output it does not expect.
+      docs-tools:
+        patterns: ["zensical", "mkdocstrings", "mkdocstrings-python"]
       minor-and-patch:
         update-types: ["minor", "patch"]
     ignore:

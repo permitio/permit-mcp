@@ -57,9 +57,11 @@ class Settings:
         resource: Key of the resource type the tools manage, such as "documents"
             (`PERMIT_RESOURCE`).
         tenant: Key of the tenant the tools work in (`PERMIT_TENANT`).
-        api_url: Base URL of the Permit API (`PERMIT_API_URL`).
+        api_url: Base URL of the Permit API (`PERMIT_API_URL`); `https://api.permit.io` by
+            default.
         pdp_url: Base URL of the Permit PDP that answers permission checks
-            (`PERMIT_PDP_URL`): the cloud PDP by default, or a container PDP.
+            (`PERMIT_PDP_URL`): the cloud PDP, `https://cloudpdp.api.permit.io`, by default,
+            or a container PDP.
         access_request_element: ID or key of the User Management element whose access
             requests the access-request tools manage (`PERMIT_ACCESS_REQUEST_ELEMENT`).
             When unset, those tools are not registered.

@@ -15,6 +15,8 @@ The first release on PyPI. To upgrade from the 0.1 server, follow the
 - Installs a `permit-mcp` command: `uvx permit-mcp`.
 - Published to PyPI by the release workflow with trusted publishing. Each file on PyPI carries
   a PEP 740 attestation signed by that workflow.
+- An API reference site, <https://permitio.github.io/permit-mcp/>, published with each release:
+  the embedding API from its docstrings, and every tool's input and output schemas.
 
 ### API
 

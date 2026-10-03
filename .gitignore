@@ -11,3 +11,10 @@ wheels/
 
 # Local configuration
 .env
+
+# The API reference site: build output, the pages scripts/docs_pages.py writes,
+# and Zensical's cache
+/site/
+/docs/reference/tools.md
+/docs/llms.txt
+/.cache/

@@ -626,33 +626,47 @@ def test_audit_gate_step_maps_the_gate_s_exits(workflow: dict[str, Any], tmp_pat
     assert "::error title=Dependency audit::The audit did not complete" in incomplete.stdout
 
 
-def gate_with_a_vulnerable_dev_tree(
-    workflow: dict[str, Any], tmp_path: Path, gate_dev_tree: str
+def gate_with_a_vulnerable_tool_tree(
+    workflow: dict[str, Any], tmp_path: Path, gate_dev_tree: str, tool_tree: str
 ) -> subprocess.CompletedProcess[str]:
     package = [{"Name": "p", "Version": "1"}]
     clean = {"Results": [{"Target": "requirements.txt", "Packages": package}]}
     advisory = {"VulnerabilityID": "CVE-1", "PkgName": "p", "Severity": "HIGH", "FixedVersion": "2"}
     vulnerable = {"Results": [{**clean["Results"][0], "Vulnerabilities": [advisory]}]}
     for tree in audit_trees(workflow):
-        report = vulnerable if tree == "dev-ceiling" else clean
+        report = vulnerable if tree == tool_tree else clean
         plant_tree(tmp_path / "audit", tree, report, pinned=1)
     env = {"AUDIT_DIR": str(tmp_path / "audit"), "GATE_DEV_TREE": gate_dev_tree}
     return run_step(workflow, AUDIT_GATE_STEP, tmp_path, env)
 
 
+@pytest.mark.parametrize("tool_tree", ["dev-ceiling", "docs-ceiling"])
 @pytest.mark.parametrize("gate_dev_tree", ["true", "null"], ids=["true", "not called"])
-def test_the_audit_gates_on_the_dev_tree_by_default(
-    workflow: dict[str, Any], tmp_path: Path, gate_dev_tree: str
+def test_the_audit_gates_on_the_dev_and_docs_trees_by_default(
+    workflow: dict[str, Any], tmp_path: Path, gate_dev_tree: str, tool_tree: str
 ) -> None:
-    completed = gate_with_a_vulnerable_dev_tree(workflow, tmp_path, gate_dev_tree)
+    completed = gate_with_a_vulnerable_tool_tree(workflow, tmp_path, gate_dev_tree, tool_tree)
     assert completed.returncode == 1
     assert "::error title=Dependency audit::Fixable HIGH or CRITICAL" in completed.stdout
 
 
-def test_a_caller_can_leave_the_dev_tree_ungated(workflow: dict[str, Any], tmp_path: Path) -> None:
-    completed = gate_with_a_vulnerable_dev_tree(workflow, tmp_path, "false")
+@pytest.mark.parametrize("tool_tree", ["dev-ceiling", "docs-ceiling"])
+def test_a_caller_can_leave_the_dev_and_docs_trees_ungated(
+    workflow: dict[str, Any], tmp_path: Path, tool_tree: str
+) -> None:
+    completed = gate_with_a_vulnerable_tool_tree(workflow, tmp_path, "false", tool_tree)
     assert completed.returncode == 0, completed.stdout + completed.stderr
-    assert "dev-ceiling is reported in the summary but not gated" in completed.stdout
+    assert (
+        "dev-ceiling docs-ceiling: reported in the summary but not gated (gate-dev-tree: false)."
+    ) in completed.stdout
+
+
+@pytest.mark.parametrize("tree", ["runtime-ceiling", "runtime-floor"])
+def test_a_caller_that_ungates_the_tool_trees_still_gates_the_runtime_ones(
+    workflow: dict[str, Any], tmp_path: Path, tree: str
+) -> None:
+    completed = gate_with_a_vulnerable_tool_tree(workflow, tmp_path, "false", tree)
+    assert completed.returncode == 1
 
 
 def test_gate_dev_tree_is_a_called_run_s_input_defaulting_to_true(
@@ -677,7 +691,8 @@ def audit_trees(workflow: dict[str, Any]) -> list[str]:
 
 def test_audit_trees_are_the_trees_audit_deps_compiles(workflow: dict[str, Any]) -> None:
     compiled = re.findall(r"^compile_tree (\S+)", AUDIT_DEPS.read_text(), flags=re.MULTILINE)
-    assert audit_trees(workflow) == compiled == ["runtime-ceiling", "runtime-floor", "dev-ceiling"]
+    assert audit_trees(workflow) == compiled
+    assert compiled == ["runtime-ceiling", "runtime-floor", "dev-ceiling", "docs-ceiling"]
 
 
 def run_audit_deps_with_stand_ins(tmp_path: Path) -> tuple[subprocess.CompletedProcess[str], Path]:
@@ -694,6 +709,7 @@ def run_audit_deps_with_stand_ins(tmp_path: Path) -> tuple[subprocess.CompletedP
         "ceiling": [f"{name}==999.0" for name in declared],
     }
     trees["dev"] = [*trees["ceiling"], "pytest==9.1.1"]
+    trees["docs"] = [*trees["ceiling"], "zensical==0.0.65"]
     for name, pins in trees.items():
         (tmp_path / f"{name}.txt").write_text("\n".join([*pins, *fillers]) + "\n")
     log = tmp_path / "calls.log"
@@ -711,7 +727,7 @@ while [[ $# -gt 0 ]]; do
   case $1 in
     -o) out=$2; shift ;;
     --resolution) [[ $2 == lowest-direct ]] && tree={tmp_path}/floor.txt; shift ;;
-    --group) tree={tmp_path}/dev.txt; shift ;;
+    --group) tree={tmp_path}/dev.txt; [[ $2 == *:docs ]] && tree={tmp_path}/docs.txt; shift ;;
   esac
   shift
 done
@@ -739,8 +755,8 @@ def test_audit_deps_compiles_each_tree_as_it_says(tmp_path: Path) -> None:
     completed, log = run_audit_deps_with_stand_ins(tmp_path)
     assert completed.returncode == 0, completed.stdout + completed.stderr
     compiles = [line for line in log.read_text().splitlines() if line.startswith("uv pip compile")]
-    assert len(compiles) == 3
-    ceiling, floor, dev = compiles
+    assert len(compiles) == 4
+    ceiling, floor, dev, docs = compiles
     for call in compiles:
         assert "--no-sources --exclude-newer false --python-version 3.11" in call
     assert "--resolution" not in ceiling
@@ -751,6 +767,10 @@ def test_audit_deps_compiles_each_tree_as_it_says(tmp_path: Path) -> None:
     assert dev.endswith(
         "/pyproject.toml:dev --no-sources --exclude-newer false --python-version "
         "3.11 --quiet -o " + str(tmp_path / "audit" / "dev-ceiling" / "requirements.txt")
+    )
+    assert docs.endswith(
+        "/pyproject.toml:docs --no-sources --exclude-newer false --python-version "
+        "3.11 --quiet -o " + str(tmp_path / "audit" / "docs-ceiling" / "requirements.txt")
     )
     assert "Every direct dependency is at its floor" in completed.stdout
 
@@ -785,6 +805,26 @@ def test_audit_deps_fails_a_floor_tree_above_the_floors(tmp_path: Path) -> None:
     assert "its floor is" in completed.stdout
 
 
+@pytest.mark.parametrize(
+    ("group", "marker"), [("dev", "pytest"), ("docs", "zensical")], ids=["dev", "docs"]
+)
+def test_audit_deps_fails_a_group_tree_without_the_group(
+    tmp_path: Path, group: str, marker: str
+) -> None:
+    run_audit_deps_with_stand_ins(tmp_path)
+    (tmp_path / f"{group}.txt").write_text((tmp_path / "ceiling.txt").read_text())
+    completed = subprocess.run(
+        [tool("bash"), str(AUDIT_DEPS), str(tmp_path / "audit2")],
+        env={"PATH": f"{tmp_path / 'bin'}{os.pathsep}{os.environ['PATH']}"},
+        cwd=REPO_ROOT,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert completed.returncode == 1
+    assert f"Tree '{group}-ceiling' has no {marker}" in completed.stdout
+
+
 def pinned_version(url_variable: str, workflow: dict[str, Any]) -> str:
     match = re.search(r"/download/v([0-9.]+)/", workflow["env"][url_variable])
     assert match is not None
@@ -806,7 +846,7 @@ def test_a_planted_trivy_config_and_ignore_file_do_not_hide_advisories(
     (repo / "pyproject.toml").write_text(
         '[project]\nname = "planted"\nversion = "0"\nrequires-python = ">=3.11"\n'
         'dependencies = ["aiohttp>=3.9.1,<3.9.2", "requests>=2.31.0,<2.31.1"]\n'
-        '[dependency-groups]\ndev = ["pytest==9.1.1"]\n'
+        '[dependency-groups]\ndev = ["pytest==9.1.1"]\ndocs = ["zensical==0.0.65"]\n'
     )
     (repo / "trivy.yaml").write_text("severity:\n  - LOW\n")
     (repo / ".trivyignore").write_text("CVE-2024-23334\nCVE-2024-30251\nCVE-2025-69223\n")
@@ -1322,3 +1362,176 @@ def test_the_stdlib_scripts_run_on_the_floor_python(workflow: dict[str, Any]) ->
                 assert match.group(1) == "uv run --no-project --python 3.11 python", run
                 calls += 1
     assert calls >= 7
+
+
+# --- the docs build ---------------------------------------------------------------
+
+BUILD_DOCS = SCRIPTS / "build-docs.sh"
+DOCS_STEP = ("docs", "Build the docs site")
+CLEAN_BUILD = "Build started\nNo issues found\nBuild finished in 0.35s\n"
+# What Zensical 0.0.65 prints for a Raises entry without a colon: Griffe's warning,
+# then the lines of a clean build, and exit 0 even with --strict.
+GRIFFE_WARNING = (
+    "Build started\n"
+    "griffe: src/permit_mcp/identity.py:43: Failed to get 'exception: description' pair"
+    " from 'ValueError `user_key` is empty or only whitespace.'\n"
+    "No issues found\nBuild finished in 0.33s\n"
+)
+# An unresolved cross-reference, as --strict reports it before it stops with status 1.
+UNRESOLVED_REFERENCE = (
+    "Build started\n"
+    "\x1b[33mWarning:\x1b[0m unresolved autoref `permit_mcp.identity.NoSuchError` in"
+    " reference/api.md\n1 issue found\nRuntimeError: Aborted because --strict flag is set\n"
+)
+
+
+PLANTED_MKDOCS = (
+    "site_url: https://example.github.io/planted/\n\nnav:\n  - Home: index.md\n\nplugins: []\n"
+)
+
+
+def plant_docs_checkout(tmp_path: Path) -> None:
+    """A checkout with check_site.py, a one-page mkdocs.yml and its page."""
+    (tmp_path / ".github" / "scripts").mkdir(parents=True)
+    shutil.copy(SCRIPTS / "check_site.py", tmp_path / ".github" / "scripts" / "check_site.py")
+    (tmp_path / "mkdocs.yml").write_text(PLANTED_MKDOCS, encoding="utf-8")
+    (tmp_path / "docs").mkdir()
+    (tmp_path / "docs" / "index.md").write_text("# Home\n", encoding="utf-8")
+
+
+def run_build_docs(tmp_path: Path, uv_script: str) -> subprocess.CompletedProcess[str]:
+    """Run build-docs.sh in a planted checkout, with `uv_script` as uv.
+
+    The stand-in records each command line in uv.txt. `uv run --no-project ...
+    python` runs the rest with this Python, so the real check_site.py runs; the
+    other commands run `uv_script`.
+    """
+    plant_docs_checkout(tmp_path)
+    stand_in(
+        tmp_path / "bin",
+        "uv",
+        f'echo "$*" >>"{tmp_path}/uv.txt"\n'
+        "if [[ $2 == --no-project ]]; then\n"
+        "  while [[ $1 != python ]]; do shift; done\n"
+        "  shift\n"
+        f'  exec "{sys.executable}" "$@"\n'
+        f"fi\n{uv_script}",
+    )
+    return subprocess.run(
+        [tool("bash"), str(BUILD_DOCS)],
+        env={"PATH": f"{tmp_path / 'bin'}{os.pathsep}{os.environ['PATH']}"},
+        cwd=tmp_path,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+
+def build_with(
+    tmp_path: Path, log: str, *, status: int = 0, html: str | None = "<a href='x/'>x</a>"
+) -> subprocess.CompletedProcess[str]:
+    """Run build-docs.sh with a Zensical that prints `log` and exits with `status`.
+
+    The build writes `html` as site/index.html, and no site when `html` is None.
+    """
+    log_file = tmp_path / "zensical.log"
+    log_file.write_text(log, encoding="utf-8")
+    write_site = ""
+    if html is not None:
+        page = tmp_path / "page.html"
+        page.write_text(html, encoding="utf-8")
+        write_site = f'mkdir -p site && cp "{page}" site/index.html\n'
+    return run_build_docs(
+        tmp_path,
+        'if [[ " $* " != *" zensical "* ]]; then exit 0; fi\n'
+        f'{write_site}cat "{log_file}"\nexit {status}',
+    )
+
+
+def test_the_docs_job_builds_with_the_script(workflow: dict[str, Any], needed: list[str]) -> None:
+    assert "docs" in needed
+    assert find_step(workflow, DOCS_STEP)["run"].strip() == ".github/scripts/build-docs.sh"
+
+
+def test_build_docs_writes_the_pages_builds_strict_from_a_clean_cache_and_checks_the_site(
+    tmp_path: Path,
+) -> None:
+    completed = build_with(tmp_path, CLEAN_BUILD)
+    assert completed.returncode == 0, completed.stdout + completed.stderr
+    assert "The docs built with no warning." in completed.stdout
+    assert (tmp_path / "uv.txt").read_text(encoding="utf-8").splitlines() == [
+        "run --locked --group docs python scripts/docs_pages.py",
+        "run --locked --group docs zensical build --strict --clean",
+        "run --no-project --python 3.11 python .github/scripts/check_site.py",
+    ]
+
+
+def test_build_docs_fails_on_a_griffe_warning_that_zensical_lets_pass(tmp_path: Path) -> None:
+    completed = build_with(tmp_path, GRIFFE_WARNING)
+    assert completed.returncode == 1
+    error = completed.stdout.split("::error title=Docs::", 1)[1]
+    assert "griffe: src/permit_mcp/identity.py:43: Failed to get" in error
+    assert "Build started" not in error, "only the unexpected lines are repeated"
+
+
+@pytest.mark.parametrize(
+    "line",
+    [
+        "WARNING -  mkdocs_autorefs: Could not find cross-reference target",
+        "Warning: anchor does not exist",
+        "Something a clean build does not print",
+    ],
+)
+def test_build_docs_fails_on_any_line_a_clean_build_does_not_print(
+    tmp_path: Path, line: str
+) -> None:
+    completed = build_with(tmp_path, CLEAN_BUILD + line + "\n")
+    assert completed.returncode == 1
+    assert line in completed.stdout.split("::error title=Docs::", 1)[1]
+
+
+def test_build_docs_strips_zensical_s_colours(tmp_path: Path) -> None:
+    coloured = "\x1b[1mBuild started\x1b[0m\nNo issues found\nBuild finished in 12ms\n"
+    completed = build_with(tmp_path, coloured)
+    assert completed.returncode == 0, completed.stdout + completed.stderr
+    assert "\x1b" not in completed.stdout
+
+
+def test_build_docs_fails_when_strict_stops_the_build(tmp_path: Path) -> None:
+    completed = build_with(tmp_path, UNRESOLVED_REFERENCE, status=1)
+    assert completed.returncode == 1
+    assert "Warning: unresolved autoref" in completed.stdout
+    assert "::error title=Docs::zensical build exited 1" in completed.stdout
+
+
+def test_build_docs_fails_when_a_nav_page_was_not_built(tmp_path: Path) -> None:
+    completed = build_with(tmp_path, CLEAN_BUILD, html=None)
+    assert completed.returncode == 1
+    assert "nav lists index.md, but the build wrote no site/index.html" in completed.stdout
+
+
+def test_build_docs_fails_on_a_root_relative_link(tmp_path: Path) -> None:
+    completed = build_with(tmp_path, CLEAN_BUILD, html="<a href='/reference/'>r</a>")
+    assert completed.returncode == 1
+    assert "/reference/ starts with / outside the site's path /planted/" in completed.stdout
+
+
+def test_build_docs_names_a_missing_snippet_when_the_build_also_failed(tmp_path: Path) -> None:
+    snippet = tmp_path / "snippet.md"
+    snippet.write_text('--8<-- "GONE.md"\n', encoding="utf-8")
+    completed = run_build_docs(
+        tmp_path,
+        f'if [[ " $* " == *" zensical "* ]]; then cp "{snippet}" docs/index.md; exit 1; fi',
+    )
+    assert completed.returncode == 1
+    assert "docs/index.md includes GONE.md, which is missing" in completed.stdout
+
+
+def test_build_docs_exits_2_when_the_build_did_not_finish(tmp_path: Path) -> None:
+    assert build_with(tmp_path, "Build started\n").returncode == 2
+
+
+def test_build_docs_stops_when_the_pages_cannot_be_written(tmp_path: Path) -> None:
+    completed = run_build_docs(tmp_path, "exit 3")
+    assert completed.returncode == 3
+    assert len((tmp_path / "uv.txt").read_text(encoding="utf-8").splitlines()) == 1

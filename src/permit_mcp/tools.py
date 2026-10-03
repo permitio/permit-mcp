@@ -47,6 +47,7 @@ TOOL_NAMES: tuple[str, ...] = (
     *ACCESS_REQUEST_TOOLS,
     *OPERATION_APPROVAL_TOOLS,
 )
+"""The names of all tools, in the order `PermitTools.register` registers them."""
 
 RequestStatus = Literal["pending", "approved", "denied", "canceled"]
 
@@ -95,8 +96,8 @@ class PermitTools:
 
     Every tool asks `identity` who the caller is; the access-request and operation-approval
     tools act in Permit as that user, and check_permission asks the PDP about that user. All
-    calls, to the API and to the PDP, share one `PermitApi` and so one HTTP session, which
-    `aclose()` closes. One instance belongs to one event loop.
+    calls, to the API and to the PDP, share one HTTP session, which `aclose()` closes. One
+    instance belongs to one event loop.
     """
 
     def __init__(self, settings: Settings, identity: IdentityResolver) -> None:

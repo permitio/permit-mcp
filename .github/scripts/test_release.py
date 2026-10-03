@@ -41,7 +41,17 @@ RELEASE = REPO_ROOT / ".github" / "workflows" / "release.yml"
 TAG_STEP = ("tag", "Check the tag against the version")
 GATE_STEP = ("scan", "Gate on fixable HIGH and CRITICAL advisories in the runtime trees")
 FILES_STEP = ("publish", "Check the files to upload")
-JOB_NEEDS = {"tag": None, "ci": "tag", "build": "ci", "scan": "build", "publish": "scan"}
+JOB_NEEDS = {
+    "tag": None,
+    "ci": "tag",
+    "build": "ci",
+    "scan": "build",
+    "publish": "scan",
+    "docs": "publish",
+}
+PAGES = REPO_ROOT / ".github" / "workflows" / "pages.yml"
+# The order of the levels a permission can be granted at.
+LEVELS = ("none", "read", "write")
 # What a job may be granted for a permission a called job asks for.
 COVERS = {"none": {"none", "read", "write"}, "read": {"read", "write"}, "write": {"write"}}
 
@@ -54,6 +64,11 @@ def release() -> dict[str, Any]:
 @pytest.fixture(scope="module")
 def ci() -> dict[str, Any]:
     return read_workflow(WORKFLOW)
+
+
+@pytest.fixture(scope="module")
+def pages() -> dict[str, Any]:
+    return read_workflow(PAGES)
 
 
 def steps(release: dict[str, Any], uses: str) -> list[dict[str, Any]]:
@@ -101,6 +116,8 @@ def test_only_publish_holds_an_oidc_token_or_an_environment(release: dict[str, A
         if name == "publish":
             assert job["permissions"] == {"id-token": "write"}
             assert job["environment"]["name"] == "pypi"
+        elif name == "docs":
+            assert "environment" not in job, "pages.yml's deploy job holds github-pages"
         else:
             assert job["permissions"] == {"contents": "read"}, name
             assert "environment" not in job, name
@@ -182,16 +199,22 @@ def test_every_job_checks_out_the_tagged_commit(release: dict[str, Any]) -> None
 # --- the CI call ------------------------------------------------------------------
 
 
-def missing_grants(ci: dict[str, Any], release: dict[str, Any]) -> list[str]:
-    """The permissions a ci.yml job asks for that release.yml's ci job does not grant.
+def asked_for(called: dict[str, Any]) -> set[tuple[str, str]]:
+    """Every (permission, level) the called workflow or one of its jobs asks for."""
+    asked: set[tuple[str, str]] = set()
+    for scope in [called, *called["jobs"].values()]:
+        asked |= set((scope.get("permissions") or {}).items())
+    return asked
+
+
+def missing_grants(called: dict[str, Any], release: dict[str, Any], job: str = "ci") -> list[str]:
+    """The permissions a called workflow's jobs ask for that release.yml's `job` does not grant.
 
     GitHub refuses the whole release run when any of them is missing, even for a
     job the run would skip.
     """
-    asked: set[tuple[str, str]] = set()
-    for scope in [ci, *ci["jobs"].values()]:
-        asked |= set((scope.get("permissions") or {}).items())
-    granted = release["jobs"]["ci"].get("permissions") or {}
+    asked = asked_for(called)
+    granted = release["jobs"][job].get("permissions") or {}
     return sorted(
         f"{name}: {level}"
         for name, level in asked
@@ -538,3 +561,44 @@ def test_the_scan_runs_ci_s_audit_script(release: dict[str, Any]) -> None:
     assert scan["run"] == '.github/scripts/audit-deps.sh "$AUDIT_DIR"'
     assert "if" not in scan
     assert "if" not in find_step(release, GATE_STEP)
+
+
+# --- the docs call ----------------------------------------------------------------
+
+
+def needed_grants(called: dict[str, Any]) -> dict[str, str]:
+    """The least grant that covers every permission the called workflow's jobs ask for."""
+    needed: dict[str, str] = {}
+    for name, level in asked_for(called):
+        if level != "none" and LEVELS.index(level) > LEVELS.index(needed.get(name, "none")):
+            needed[name] = level
+    return needed
+
+
+def test_docs_publishes_the_site_once_the_release_is_on_pypi(
+    release: dict[str, Any], pages: dict[str, Any]
+) -> None:
+    job = release["jobs"]["docs"]
+    assert job["needs"] == "publish"
+    assert job["uses"] == "./.github/workflows/pages.yml"
+    assert "secrets" not in job
+    assert "with" not in job
+    assert "if" not in job, "publish's if already skips it on a dry run"
+    assert "workflow_call" in pages["on"]
+
+
+def test_docs_grants_exactly_what_pages_asks_for(
+    release: dict[str, Any], pages: dict[str, Any]
+) -> None:
+    assert missing_grants(pages, release, "docs") == []
+    assert release["jobs"]["docs"]["permissions"] == needed_grants(pages)
+    assert needed_grants(pages) == {"contents": "read", "pages": "write", "id-token": "write"}
+
+
+def test_a_permission_a_new_pages_job_asks_for_is_missing(
+    release: dict[str, Any], pages: dict[str, Any]
+) -> None:
+    planted = json.loads(json.dumps(pages))
+    planted["jobs"]["deploy"]["permissions"]["contents"] = "write"
+    assert missing_grants(planted, release, "docs") == ["contents: write"]
+    assert needed_grants(planted)["contents"] == "write"

@@ -21,11 +21,11 @@ on:
   workflow_dispatch:
   workflow_call:
     inputs:
-      # The release gates on the runtime trees only: a dev tool's advisory never
-      # reaches a user, so it must not hold up a release. Every other run gates
-      # on the dev tree too.
+      # The release gates on the runtime trees only: an advisory in a dev or docs
+      # tool never reaches a user, so it must not hold up a release. Every other
+      # run gates on the dev and docs trees too.
       gate-dev-tree:
-        description: Fail the audit on an advisory in the dev tree as well
+        description: Fail the audit on an advisory in the dev and docs trees as well
         type: boolean
         default: true
 
@@ -43,7 +43,7 @@ env:
   # Where audit-deps.sh writes the trees and their Trivy reports, and the trees,
   # in the order audit-deps.sh compiles them.
   AUDIT_DIR: /tmp/audit
-  AUDIT_TREES: runtime-ceiling runtime-floor dev-ceiling
+  AUDIT_TREES: runtime-ceiling runtime-floor dev-ceiling docs-ceiling
   # Binaries that are downloaded and checked against the line of each release's
   # checksums file for the runner's platform (fetch-binary.sh). Dependabot does
   # not update these; actionlint's version matches the prek hook's.
@@ -356,6 +356,37 @@ jobs:
           fi
           echo "permit-mcp exits 2 on a missing configuration, as it should."
 
+  # Builds the API reference site as the Pages workflow does, with
+  # build-docs.sh. It fails on any warning (a docstring Griffe cannot parse, an
+  # unresolved cross-reference, a broken link or anchor) and on what Zensical
+  # does not report, which check_site.py checks in what was built: a nav page
+  # not built, a page left out of nav, a link from the host's root, a missing
+  # snippet include. Nothing is uploaded; release.yml publishes the site, through
+  # pages.yml, once a release is on PyPI. Its concurrency is every job's.
+  docs:
+    name: docs
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    concurrency:
+      group: >-
+        ${{ github.workflow }}-${{ github.ref }}-docs-${{
+        (github.event_name == 'schedule' || github.event_name == 'workflow_dispatch')
+        && github.run_id || 'shared' }}
+      cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7  # v10.2.0
+        with:
+          version-file: uv.lock
+          python-version: "3.13"
+          enable-cache: false
+      - name: Build the docs site
+        run: .github/scripts/build-docs.sh
+
   # Scans the dependency trees a consumer can install with Trivy
   # (.github/scripts/audit-deps.sh): the newest and the lowest runtime versions
   # the ranges allow, resolved for Python 3.11, and the dev tree. Fails on a
@@ -400,7 +431,7 @@ jobs:
           read -ra trees <<<"$AUDIT_TREES"
           uv run --no-project --python 3.11 python .github/scripts/format_audit.py \
             --dir "$AUDIT_DIR" "${trees[@]}" \
-            --context "pyproject.toml dependencies and dev group, resolved for Python 3.11" \
+            --context "pyproject.toml dependencies, dev and docs groups, resolved for Python 3.11" \
             >>"$GITHUB_STEP_SUMMARY"
       - name: Annotate blocking advisories
         if: ${{ !cancelled() }}
@@ -410,8 +441,9 @@ jobs:
             --dir "$AUDIT_DIR" "${trees[@]}" --annotations
       # Exits 1 on a fixable HIGH or CRITICAL advisory, and 2 when a report is
       # missing, unreadable, scanned nothing or scanned other than its tree.
-      # The dev tree is gated unless a caller passes gate-dev-tree: false; toJSON
-      # tells that false from the null of a run that is not called.
+      # The dev and docs trees are gated unless a caller passes gate-dev-tree:
+      # false, which keeps the runtime-* trees only; toJSON tells that false
+      # from the null of a run that is not called.
       - name: Gate on fixable HIGH and CRITICAL advisories
         if: ${{ !cancelled() }}
         env:
@@ -419,8 +451,17 @@ jobs:
         run: |
           read -ra trees <<<"$AUDIT_TREES"
           if [[ $GATE_DEV_TREE == false ]]; then
-            read -ra trees <<<"${AUDIT_TREES/dev-ceiling/}"
-            echo "dev-ceiling is reported in the summary but not gated (gate-dev-tree: false)."
+            gated=()
+            ungated=()
+            for tree in "${trees[@]}"; do
+              if [[ $tree == runtime-* ]]; then
+                gated+=("$tree")
+              else
+                ungated+=("$tree")
+              fi
+            done
+            echo "${ungated[*]}: reported in the summary but not gated (gate-dev-tree: false)."
+            trees=("${gated[@]}")
           fi
           status=0
           uv run --no-project --python 3.11 python .github/scripts/format_audit.py \
@@ -623,6 +664,7 @@ jobs:
       - audit
       - audit-scripts
       - dependency-review
+      - docs
       - gitleaks
       - package
       - prek
@@ -642,7 +684,7 @@ jobs:
         env:
           NEEDS: ${{ toJSON(needs) }}
           EVENT: ${{ github.event_name }}
-          EXPECTED_JOBS: 8
+          EXPECTED_JOBS: 9
           ADVISORY_JOBS: ""
         run: |
           if ! results=$(jq -r 'to_entries[] | "\(.key) \(.value.result)"' <<<"$NEEDS"); then

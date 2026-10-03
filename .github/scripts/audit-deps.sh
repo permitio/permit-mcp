@@ -4,7 +4,7 @@
 #
 # Usage: audit-deps.sh <output-dir>
 #
-# Writes three dependency trees to <output-dir>, each as a directory holding a
+# Writes four dependency trees to <output-dir>, each as a directory holding a
 # file named requirements.txt, and one Trivy JSON report per tree:
 #
 #   runtime-ceiling/  + trivy-runtime-ceiling.json
@@ -16,6 +16,10 @@
 #   dev-ceiling/      + trivy-dev-ceiling.json
 #       [project].dependencies plus the dev group, newest resolution. Test and
 #       lint tooling only; it never ships to a user.
+#   docs-ceiling/     + trivy-docs-ceiling.json
+#       [project].dependencies plus the docs group, newest resolution. What
+#       builds the API reference site in CI and the Pages workflow; it never
+#       ships to a user.
 #
 # The trees are compiled from pyproject.toml, not exported from uv.lock: the
 # lock pins this repository's own environment, while consumers resolve the
@@ -87,12 +91,19 @@ uv run --no-project --python "${PYTHON_VERSION}" python \
   "${OUT}/runtime-floor/requirements.txt"
 compile_tree dev-ceiling "" "${REPO_ROOT}/pyproject.toml" \
   --group "${REPO_ROOT}/pyproject.toml:dev"
+compile_tree docs-ceiling "" "${REPO_ROOT}/pyproject.toml" \
+  --group "${REPO_ROOT}/pyproject.toml:docs"
 
-# The package count cannot tell a dev tree from a runtime one: a --group that
-# matched nothing would scan the runtime tree twice.
+# The package count cannot tell a group's tree from a runtime one: a --group
+# that matched nothing would scan the runtime tree again.
 if ! grep -q '^pytest==' "${OUT}/dev-ceiling/requirements.txt"; then
   echo "::error title=Dependency resolution failed::Tree 'dev-ceiling' has no pytest," \
     "so the dev group was not resolved."
+  exit 1
+fi
+if ! grep -q '^zensical==' "${OUT}/docs-ceiling/requirements.txt"; then
+  echo "::error title=Dependency resolution failed::Tree 'docs-ceiling' has no zensical," \
+    "so the docs group was not resolved."
   exit 1
 fi
 echo "::endgroup::"

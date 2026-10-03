@@ -162,7 +162,9 @@ and set `PERMIT_PDP_URL` to it.
 
 The package exports `create_server`, `PermitTools`, `Settings`, `TOOL_NAMES`, the resolvers
 `bound_user` and `access_token_subject`, the `IdentityResolver` protocol, and the errors
-`ConfigError` and `IdentityError`. The server runs on `MCPServer` from mcp 2.
+`ConfigError` and `IdentityError`. The server runs on `MCPServer` from mcp 2. The
+[API reference](https://permitio.github.io/permit-mcp/) documents each of them, and lists every
+tool's input and output schemas.
 
 ### A server for one user
 
@@ -331,6 +333,7 @@ async def create_document(document_id: str, title: str) -> None:
 ## Links
 
 - [Access Request MCP on docs.permit.io](https://docs.permit.io/ai-security/access-request-mcp/overview)
+- [API reference](https://permitio.github.io/permit-mcp/)
 - [Upgrade guide from 0.1](https://github.com/permitio/permit-mcp/blob/main/docs/upgrade-to-1.0.md)
 - [Changelog](https://github.com/permitio/permit-mcp/blob/main/CHANGELOG.md)
 - [Contributing](https://github.com/permitio/permit-mcp/blob/main/CONTRIBUTING.md)
