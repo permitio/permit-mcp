@@ -253,6 +253,10 @@ server.run("stdio")
 Over streamable HTTP the lifespan runs once per process. Some transports (SSE, in-memory clients)
 enter it once per connection; `create_server()` counts open connections for that reason, and
 closes the session when the last one ends. A call made after `aclose()` opens a new session.
+Without `aclose()`, garbage collection of the `PermitTools`, or interpreter exit, starts closing
+the connections on the event loop, and aiohttp does not warn of an unclosed session. Once the loop
+has closed, asyncio closes each connection only when it is collected, with a `ResourceWarning`,
+so close the tools in the lifespan as above.
 
 ### Your own identity resolver
 

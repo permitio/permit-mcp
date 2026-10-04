@@ -14,6 +14,7 @@ import http
 import json
 import urllib.parse
 import urllib.request
+import weakref
 from collections.abc import Iterable, Mapping
 from typing import Any, Literal, TypeVar
 from uuid import UUID
@@ -84,11 +85,14 @@ class PermitApi:
 
     One instance belongs to one event loop: the first call opens the session on the running
     loop, and every later call must run on that loop. `aclose()` closes the session, and a
-    call made after it opens a new one. Cookies are never stored, so nothing one call
-    receives is sent by another. Redirects are not followed. Proxies come from the
-    environment (HTTP_PROXY, HTTPS_PROXY and NO_PROXY, or the system settings), and a netrc
-    file is never read. The project and environment of the API key are asked for once and
-    kept.
+    call made after it opens a new one. When an instance with an open session is garbage
+    collected, or still exists at interpreter exit, and `aclose()` was not called, a
+    finalizer closes the session's connections without the event loop
+    (`_close_unawaited`). Like the loop it belongs to, an instance is not carried across
+    `fork()`. Cookies are never stored, so nothing one call receives is sent by another.
+    Redirects are not followed. Proxies come from the environment (HTTP_PROXY, HTTPS_PROXY
+    and NO_PROXY, or the system settings), and a netrc file is never read. The project and
+    environment of the API key are asked for once and kept.
     """
 
     def __init__(self, settings: Settings) -> None:
@@ -100,15 +104,18 @@ class PermitApi:
         """
         self._settings = settings
         self._session: aiohttp.ClientSession | None = None
+        self._finalizer: weakref.finalize[[aiohttp.ClientSession], PermitApi] | None = None
         self._scope_lock = asyncio.Lock()
         self._scope: tuple[str, str] | None = None
 
     async def aclose(self) -> None:
         """Close the HTTP session. Calling it again, or before any call, does nothing.
 
-        A later call opens a new session.
+        A later call opens a new session. After it, garbage collection of this instance
+        closes nothing.
         """
         session, self._session = self._session, None
+        self._detach_finalizer()
         if session is not None and not session.closed:
             await session.close()
 
@@ -592,6 +599,7 @@ class PermitApi:
     def _current_session(self) -> aiohttp.ClientSession:
         """Return the HTTP session, opened on first use."""
         if self._session is None or self._session.closed:
+            self._detach_finalizer()
             self._session = aiohttp.ClientSession(
                 timeout=aiohttp.ClientTimeout(total=REQUEST_TIMEOUT_SECONDS),
                 cookie_jar=aiohttp.DummyCookieJar(),
@@ -599,7 +607,35 @@ class PermitApi:
                 # whose credentials would clash with the Authorization header.
                 trust_env=False,
             )
+            # Holds the session, not this instance, so it does not keep the instance alive.
+            self._finalizer = weakref.finalize(self, _close_unawaited, self._session)
         return self._session
+
+    def _detach_finalizer(self) -> None:
+        if self._finalizer is not None:
+            self._finalizer.detach()
+            self._finalizer = None
+
+
+def _close_unawaited(session: aiohttp.ClientSession) -> None:
+    """Close `session` without its event loop: a PermitApi was dropped without `aclose()`.
+
+    aiohttp 3.14 has no public synchronous close: `ClientSession.close()` is a coroutine,
+    and `BaseConnector.close()` schedules a task on the loop and warns when it is not
+    awaited. `BaseConnector._close()` is what aiohttp's own `BaseConnector.__del__` calls
+    at garbage collection: it cancels the connector's pending DNS lookups and cleanup
+    handles, and closes every pooled and acquired connection's transport, without
+    awaiting anything, and it does nothing on a connector already closed. A closed
+    connector is a closed session, so neither the session nor the connector then warns
+    that it was left unclosed. When the loop is already closed, `_close()` only marks the
+    connector closed: asyncio cannot close a transport without its loop, and reports each
+    one it left open when it is collected. Like aiohttp's `__del__`, it runs in whichever
+    thread collects the instance.
+    """
+    connector = session.connector
+    if connector is not None:
+        # The synchronous close aiohttp's own __del__ uses; there is no public one.
+        connector._close()  # noqa: SLF001
 
 
 def _element(value: str | None, setting: str) -> str:

@@ -239,7 +239,10 @@ class PermitTools:
     async def aclose(self) -> None:
         """Close the HTTP session to Permit now; a later call opens a new one.
 
-        Hosts call it when their server shuts down.
+        Hosts call it when their server shuts down. Without it, garbage collection of the
+        instance, or interpreter exit, starts closing the connections on the event loop,
+        with no warning from aiohttp. Once the loop has closed, asyncio closes each
+        connection only when it is collected, with a ResourceWarning.
         """
         await self._api.aclose()
 
