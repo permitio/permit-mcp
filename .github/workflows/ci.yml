@@ -21,11 +21,11 @@ on:
   workflow_dispatch:
   workflow_call:
     inputs:
-      # The release gates on the runtime trees only: an advisory in a dev or docs
-      # tool never reaches a user, so it must not hold up a release. Every other
-      # run gates on the dev and docs trees too.
+      # The release gates on the runtime trees only: an advisory in a dev, docs
+      # or release tool, or in the example, never reaches a user, so it must not
+      # hold up a release. Every other run gates on those trees too.
       gate-dev-tree:
-        description: Fail the audit on an advisory in the dev and docs trees as well
+        description: Fail the audit on an advisory in the dev, docs, release and example trees too
         type: boolean
         default: true
 
@@ -43,7 +43,7 @@ env:
   # Where audit-deps.sh writes the trees and their Trivy reports, and the trees,
   # in the order audit-deps.sh compiles them.
   AUDIT_DIR: /tmp/audit
-  AUDIT_TREES: runtime-ceiling runtime-floor dev-ceiling docs-ceiling example-ceiling
+  AUDIT_TREES: runtime-ceiling runtime-floor dev-ceiling docs-ceiling release-ceiling example-ceiling
   # Binaries that are downloaded and checked against the line of each release's
   # checksums file for the runner's platform (fetch-binary.sh). Dependabot does
   # not update these; actionlint's version matches the prek hook's.
@@ -326,11 +326,11 @@ jobs:
 
   # Scans the dependency trees a consumer can install with Trivy
   # (.github/scripts/audit-deps.sh): the newest and the lowest runtime versions
-  # the ranges allow, resolved for Python 3.11, and the dev, docs and example
-  # trees. Fails on a
-  # fixable HIGH or CRITICAL advisory, and when a scan did not complete. The
-  # report goes to the job summary and the dependency-audit artifact; each
-  # blocking advisory is also an annotation, which reaches fork pull requests.
+  # the ranges allow, resolved for Python 3.11, and the dev, docs, release and
+  # example trees. Fails on a fixable HIGH or CRITICAL advisory, and when a
+  # scan did not complete. The report goes to the job summary and the
+  # dependency-audit artifact; each blocking advisory is also an annotation,
+  # which reaches fork pull requests.
   # Read-only on purpose: resolving the trees can run a dependency's setup.py,
   # and a pull request controls the dependency list.
   audit:
@@ -360,9 +360,10 @@ jobs:
         run: .github/scripts/audit-deps.sh "$AUDIT_DIR"
       # The summary and the gate read the same reports with the same tested
       # code, so they cannot disagree. They run after a failed scan too: the
-      # summary then says what is missing, and the gate exits 2. The dev, docs
-      # and example trees are gated unless a caller passes gate-dev-tree: false;
-      # toJSON tells that false from the null of a run that is not called.
+      # summary then says what is missing, and the gate exits 2. The dev, docs,
+      # release and example trees are gated unless a caller passes
+      # gate-dev-tree: false; toJSON tells that false from the null of a run
+      # that is not called.
       - name: Write the job summary
         if: ${{ !cancelled() }}
         run: >-

@@ -4,7 +4,7 @@
 #
 # Usage: audit-deps.sh <output-dir>
 #
-# Writes five dependency trees to <output-dir>, each as a directory holding a
+# Writes six dependency trees to <output-dir>, each as a directory holding a
 # file named requirements.txt, and one Trivy JSON report per tree:
 #
 #   runtime-ceiling/  + trivy-runtime-ceiling.json
@@ -19,6 +19,10 @@
 #   docs-ceiling/     + trivy-docs-ceiling.json
 #       [project].dependencies plus the docs group, newest resolution. What
 #       builds the API reference site in CI and the Pages workflow; it never
+#       ships to a user.
+#   release-ceiling/  + trivy-release-ceiling.json
+#       [project].dependencies plus the release group, newest resolution. What
+#       release.yml's verify job checks a release's attestations with; it never
 #       ships to a user.
 #   example-ceiling/  + trivy-example-ceiling.json
 #       examples/food-ordering-system's dependencies, newest resolution, with
@@ -108,6 +112,8 @@ compile_tree dev-ceiling "" published "${REPO_ROOT}/pyproject.toml" \
   --group "${REPO_ROOT}/pyproject.toml:dev"
 compile_tree docs-ceiling "" published "${REPO_ROOT}/pyproject.toml" \
   --group "${REPO_ROOT}/pyproject.toml:docs"
+compile_tree release-ceiling "" published "${REPO_ROOT}/pyproject.toml" \
+  --group "${REPO_ROOT}/pyproject.toml:release"
 compile_tree example-ceiling "" local "${REPO_ROOT}/examples/food-ordering-system/pyproject.toml"
 
 # The package count cannot tell a group's tree from a runtime one: a --group
@@ -120,6 +126,11 @@ fi
 if ! grep -q '^zensical==' "${OUT}/docs-ceiling/requirements.txt"; then
   echo "::error title=Dependency resolution failed::Tree 'docs-ceiling' has no zensical," \
     "so the docs group was not resolved."
+  exit 1
+fi
+if ! grep -q '^pypi-attestations==' "${OUT}/release-ceiling/requirements.txt"; then
+  echo "::error title=Dependency resolution failed::Tree 'release-ceiling' has no" \
+    "pypi-attestations, so the release group was not resolved."
   exit 1
 fi
 if ! grep -q '^google-genai==' "${OUT}/example-ceiling/requirements.txt"; then

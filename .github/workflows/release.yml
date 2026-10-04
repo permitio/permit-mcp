@@ -31,7 +31,7 @@ defaults:
 env:
   # As in ci.yml; test_workflows.py checks that the two agree.
   AUDIT_DIR: /tmp/audit
-  AUDIT_TREES: runtime-ceiling runtime-floor dev-ceiling docs-ceiling example-ceiling
+  AUDIT_TREES: runtime-ceiling runtime-floor dev-ceiling docs-ceiling release-ceiling example-ceiling
   TRIVY_URL: https://github.com/aquasecurity/trivy/releases/download/v0.74.0/trivy_0.74.0_Linux-64bit.tar.gz
   TRIVY_SHA256: 2ae6fe3ee734b7fdf11335663e18c75ea12dccc76062f09f164a3b0f8be4371a
 
@@ -129,8 +129,8 @@ jobs:
   # proved the wheel's metadata equals pyproject.toml's, so scanning
   # pyproject.toml's ranges is scanning the wheel's. The same scripts as
   # ci.yml's audit job, but the gate here is the release's own, so it holds
-  # even if CI ever makes its audit advisory. The dev, docs and example trees
-  # are in the summary only. Exits 1 on a fixable HIGH or CRITICAL advisory in
+  # even if CI ever makes its audit advisory. The dev, docs, release and
+  # example trees are in the summary only. Exits 1 on a fixable HIGH or CRITICAL advisory in
   # a runtime tree, and 2 when a scan did not complete.
   scan:
     name: Scan the runtime dependencies

@@ -169,7 +169,7 @@ job apart.
 | `package` | `uv build --no-sources`, a check of the wheel and sdist contents and of the wheel's metadata against `pyproject.toml` (`check_dist.py`, as the release runs it), the `permit-mcp` command from the installed wheel, which must exit 2 without configuration, and `check-consumer-types.sh`: mypy on `tests/consumer/consumer.py` against the installed wheel (see [the consumer fixture](#the-consumer-fixture)) |
 | `docs` | `.github/scripts/build-docs.sh`: builds the API reference site, fails on any warning, and checks what was built with `check_site.py` (see [the API reference site](#the-api-reference-site)) |
 | `example` | The food-ordering example (`examples/food-ordering-system`), a uv project with its own `uv.lock`: `uv sync --locked`, ruff (the root's configuration), mypy (the example's strict configuration) and its offline tests, then a check that no test skipped |
-| `audit` | Trivy on the runtime dependency trees (newest and lowest), the dev tree, the docs tree (the `docs` group) and the example's tree; fails on a fixable HIGH or CRITICAL advisory. In the run `release.yml` calls, the dev, docs and example trees are reported but do not fail it (the `gate-dev-tree` input) |
+| `audit` | Trivy on the runtime dependency trees (newest and lowest), the dev tree, the docs tree (the `docs` group), the release tree (the `release` group, which `verify` runs) and the example's tree; fails on a fixable HIGH or CRITICAL advisory. In the run `release.yml` calls, the dev, docs, release and example trees are reported but do not fail it (the `gate-dev-tree` input) |
 | `audit-scripts` | `uv run --locked --only-dev pytest -c .github/scripts/pytest.ini -q .github/scripts` |
 | `dependency-review` | GitHub's dependency review; fails a pull request that adds a dependency or action with a HIGH or CRITICAL advisory |
 | `mutation` | `.github/scripts/mutation_gate.py` on the package lines a pull request changes; fails when the tests catch fewer than 80% of the mutants |
@@ -423,9 +423,9 @@ it, so a failure stops the release before anything is uploaded.
 | Job | What it does |
 | --- | --- |
 | `tag` | Fails a pre-release, a tag other than the whole string `v` + the version in `pyproject.toml` (such as `v1.2.3`), and a tag whose commit is not on `main` |
-| `CI` | Runs `ci.yml` in full on the tagged commit, with `gate-dev-tree: false`: an advisory in the dev or docs tree is reported but does not hold up a release |
+| `CI` | Runs `ci.yml` in full on the tagged commit, with `gate-dev-tree: false`: an advisory in the dev, docs, release or example tree is reported but does not hold up a release |
 | `build` | `uv build --no-sources` once, with uv pinned by version and checksum and no cache, then `check_dist.py`: the files ship the package and nothing else, and the wheel declares the version, `requires-python` and dependencies of `pyproject.toml` |
-| `scan` | `audit-deps.sh`; fails on a fixable HIGH or CRITICAL advisory in the runtime trees (newest and lowest versions) |
+| `scan` | `audit-deps.sh`; fails on a fixable HIGH or CRITICAL advisory in the runtime trees (newest and lowest versions); the dev, docs, release and example trees are in its summary only |
 | `publish` | Waits for a reviewer to approve the `pypi` environment, checks that the `dist` artifact `build` uploaded holds exactly the tag's wheel and sdist, and uploads them with PEP 740 attestations |
 | `verify` | After `publish`: waits up to 15 minutes for PyPI to serve the version, downloads its wheel and sdist, checks that they are the files `build` made (SHA-256), verifies the PEP 740 attestations PyPI holds for each against this repository, `release.yml` and the `pypi` environment with `pypi-attestations verify pypi` (the `release` dependency group in `uv.lock`), and runs `permit-mcp` from PyPI's wheel in a fresh environment with an empty environment, which must exit 2 (`.github/scripts/verify-release.sh`) |
 | `docs` | Runs `pages.yml`: builds the API reference site from the tag and deploys it to GitHub Pages (see [the API reference site](#the-api-reference-site)) |

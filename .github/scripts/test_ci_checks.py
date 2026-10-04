@@ -54,7 +54,14 @@ CI_ENV = {
     "PULL_REQUEST_JOBS": "dependency-review mutation",
     "SCHEDULED_JOBS": "e2e e2e-pdp-latest",
 }
-TREES = ["runtime-ceiling", "runtime-floor", "dev-ceiling", "docs-ceiling", "example-ceiling"]
+TREES = [
+    "runtime-ceiling",
+    "runtime-floor",
+    "dev-ceiling",
+    "docs-ceiling",
+    "release-ceiling",
+    "example-ceiling",
+]
 
 
 def python_uv(tmp_path: Path, otherwise: str = "") -> None:
@@ -691,13 +698,16 @@ GATE_SAYS = {
         ("runtime-floor", "", "null", 1),
         ("dev-ceiling", "", "true", 1),
         ("docs-ceiling", "", "null", 1),
+        ("release-ceiling", "", "true", 1),
         ("example-ceiling", "", "true", 1),
         ("dev-ceiling", "", "false", 0),
         ("docs-ceiling", "", "false", 0),
+        ("release-ceiling", "", "false", 0),
         ("example-ceiling", "", "false", 0),
         ("runtime-ceiling", "", "false", 1),
         ("runtime-floor", "", "false", 1),
         ("", "dev-ceiling", "true", 2),
+        ("", "release-ceiling", "true", 2),
         ("", "runtime-floor", "false", 2),
     ],
 )
@@ -711,7 +721,10 @@ def test_the_audit_gate_gates_every_tree_unless_a_caller_ungates_the_tool_trees(
     blocking = [line for line in lines if line.startswith("::error title=HIGH: CVE-1 in p::")]
     assert len(blocking) == (status == 1), "each blocking advisory is annotated"
     assert [line for line in lines if line not in blocking] == GATE_SAYS[status]
-    ungated = "dev-ceiling docs-ceiling example-ceiling: reported in the summary but not gated"
+    ungated = (
+        "dev-ceiling docs-ceiling release-ceiling example-ceiling: reported in the summary but"
+        " not gated"
+    )
     assert (ungated in completed.stdout) == (gate_dev_tree == "false")
 
 
@@ -769,7 +782,7 @@ def audit_deps(tmp_path: Path, **trees: str) -> subprocess.CompletedProcess[str]
 
     The planted compile writes the tree its arguments name: the project's floors at
     `--resolution lowest-direct`, above them otherwise, with a marker package in the dev,
-    docs and example trees. `trees` plants another tree in place of one, such as
+    docs, release and example trees. `trees` plants another tree in place of one, such as
     floor="ceiling". `uv run` runs the real check_floors.py.
     """
     fillers = [f"filler{index}==1.0" for index in range(10)]
@@ -779,6 +792,7 @@ def audit_deps(tmp_path: Path, **trees: str) -> subprocess.CompletedProcess[str]
         for group, marker in [
             ("dev", "pytest==9.1.1"),
             ("docs", "zensical==0.0.65"),
+            ("release", "pypi-attestations==0.0.30"),
             ("example", "google-genai==2.25.0"),
         ]
     }
@@ -792,7 +806,13 @@ while [[ $# -gt 0 ]]; do
   case $1 in
     -o) out=$2; shift ;;
     --resolution) [[ $2 == lowest-direct ]] && tree={tmp_path}/floor.txt; shift ;;
-    --group) tree={tmp_path}/dev.txt; [[ $2 == *:docs ]] && tree={tmp_path}/docs.txt; shift ;;
+    --group)
+      case $2 in
+        *:docs) tree={tmp_path}/docs.txt ;;
+        *:release) tree={tmp_path}/release.txt ;;
+        *) tree={tmp_path}/dev.txt ;;
+      esac
+      shift ;;
     */examples/food-ordering-system/pyproject.toml) tree={tmp_path}/example.txt ;;
   esac
   shift
@@ -824,6 +844,10 @@ def test_audit_deps_compiles_and_scans_each_tree_as_it_says(tmp_path: Path) -> N
         ),
         f"pip compile {project} --group {project}:dev {published}/dev-ceiling/requirements.txt",
         f"pip compile {project} --group {project}:docs {published}/docs-ceiling/requirements.txt",
+        (
+            f"pip compile {project} --group {project}:release"
+            f" {published}/release-ceiling/requirements.txt"
+        ),
         # The example installs permit-mcp from this checkout, so its sources apply.
         (
             f"pip compile {REPO_ROOT}/examples/food-ordering-system/pyproject.toml"
@@ -845,6 +869,7 @@ def test_audit_deps_compiles_and_scans_each_tree_as_it_says(tmp_path: Path) -> N
         ("floor", "its floor is"),
         ("dev", "Tree 'dev-ceiling' has no pytest"),
         ("docs", "Tree 'docs-ceiling' has no zensical"),
+        ("release", "Tree 'release-ceiling' has no pypi-attestations"),
         ("example", "Tree 'example-ceiling' has no google-genai"),
     ],
 )
@@ -876,6 +901,7 @@ def test_a_planted_trivy_config_and_ignore_file_do_not_hide_advisories(tmp_path:
         '[project]\nname = "planted"\nversion = "0"\nrequires-python = ">=3.11"\n'
         'dependencies = ["aiohttp>=3.9.1,<3.9.2", "requests>=2.31.0,<2.31.1"]\n'
         '[dependency-groups]\ndev = ["pytest==9.1.1"]\ndocs = ["zensical==0.0.65"]\n'
+        'release = ["pypi-attestations==0.0.30"]\n'
     )
     (repo / "examples" / "food-ordering-system").mkdir(parents=True)
     (repo / "examples" / "food-ordering-system" / "pyproject.toml").write_text(

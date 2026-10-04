@@ -648,6 +648,7 @@ def test_the_audit_trees_and_trivy_are_one_set(workflows: dict[str, dict[str, An
         "runtime-floor",
         "dev-ceiling",
         "docs-ceiling",
+        "release-ceiling",
         "example-ceiling",
     ]
 
