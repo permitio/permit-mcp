@@ -247,7 +247,10 @@ GitHub environment, which only `main` may deploy to (see [Repository setup](#rep
 so a workflow pushed on any other branch never receives them. Pull requests never run them:
 their code would run with the project's key. Runs and the two jobs wait for each other, so one
 project is never used by two runs at a time; in CI the run id in the environment's key is the
-workflow run's id, attempt and job. The scratch environment's API key is masked in the log as
+workflow run's id, attempt and job. `e2e` and `e2e-pdp-latest` share that one concurrency
+group, and GitHub keeps one pending job per group, so a manual run that overlaps the weekly run
+can cancel a job that was waiting; that job then shows as cancelled, which CI reports as an
+advisory warning, not as a skip. The scratch environment's API key is masked in the log as
 soon as it is read.
 
 ### API coverage report
