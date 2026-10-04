@@ -62,6 +62,11 @@ docs = [
     "mkdocstrings-python==2.0.9",
     "zensical==0.0.65",
 ]
+# release.yml's verify job: checks the PEP 740 attestations PyPI holds for a release.
+# Not installed by `uv sync`.
+release = [
+    "pypi-attestations==0.0.30",
+]
 
 [tool.pytest]
 asyncio_mode = "auto"

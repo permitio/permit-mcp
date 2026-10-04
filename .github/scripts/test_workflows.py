@@ -2,9 +2,10 @@
 
 When each workflow, job and step runs (triggers, `if:`s, needs, timeouts), what each
 step that runs a command runs and with which inputs, the tests matrix, that nothing
-may fail but notify's artifact download, the concurrency groups, that release.yml
-grants the workflows it calls what their jobs ask for, and the tools pinned in more
-than one place. What each gate decides is tested on its script, in the other files.
+may fail but notify's artifact download, the concurrency groups, what each release.yml
+job is granted and that it grants the workflows it calls what their jobs ask for, and
+the tools pinned in more than one place. What each gate decides is tested on its
+script, in the other files.
 
 Run with:
 uv run --only-dev pytest -c .github/scripts/pytest.ini .github/scripts/test_workflows.py
@@ -74,6 +75,7 @@ JOBS: dict[str, tuple[list[str], dict[str, tuple[Any, ...]]]] = {
             "build": (None, "ci", 10, {}),
             "scan": (None, "build", 15, {}),
             "publish": ("github.event_name == 'release'", "scan", 10, {}),
+            "verify": ("github.event_name == 'release'", "publish", 25, {}),
             "docs": (None, "publish", None, None),
         },
     ),
@@ -288,6 +290,13 @@ release.yml publish
   Check the files to upload
     env TAG: ${{ github.event.release.tag_name }}
     run: .github/scripts/release-checks.sh files dist
+release.yml verify
+  Verify the release on PyPI
+    env TAG: ${{ github.event.release.tag_name }}
+    env REPOSITORY: ${{ github.repository }}
+    env WAIT_SECONDS: 900
+    env POLL_SECONDS: 15
+    run: uv run --locked --only-group release .github/scripts/verify-release.sh dist
 pages.yml build
   Check that the ref is a published release
     env REF_TYPE: ${{ github.ref_type }}
@@ -553,6 +562,29 @@ def test_the_grant_check_sees_what_a_planted_permission_needs(
     assert needed_grants(planted) == needed
 
 
+# What each release.yml job is granted; the workflow's top level grants nothing. Only
+# publish can mint an OIDC token for PyPI. verify reads PyPI and the run's own artifact,
+# which download-artifact fetches with the run's token, not with the job's grant.
+RELEASE_GRANTS = {
+    "tag": {"contents": "read"},
+    "ci": {"contents": "read"},
+    "build": {"contents": "read"},
+    "scan": {"contents": "read"},
+    "publish": {"contents": "read", "id-token": "write"},
+    "verify": {"contents": "read"},
+    "docs": {"contents": "read", "pages": "write", "id-token": "write"},
+}
+
+
+def test_each_release_job_is_granted_exactly_what_it_needs(
+    workflows: dict[str, dict[str, Any]],
+) -> None:
+    release = workflows["release.yml"]
+    assert release["permissions"] == {}
+    granted = {name: job.get("permissions") for name, job in release["jobs"].items()}
+    assert granted == RELEASE_GRANTS
+
+
 def test_only_build_uploads_dist_and_publish_uploads_what_it_downloads(
     workflows: dict[str, dict[str, Any]],
 ) -> None:
@@ -566,6 +598,7 @@ def test_only_build_uploads_dist_and_publish_uploads_what_it_downloads(
         ("build", "actions/upload-artifact", "dist"),
         ("scan", "actions/upload-artifact", "release-dependency-audit"),
         ("publish", "actions/download-artifact", "dist"),
+        ("verify", "actions/download-artifact", "dist"),
     ]
     assert all("overwrite" not in inputs for _, _, inputs in artifacts)
     publish = workflows["release.yml"]["jobs"]["publish"]

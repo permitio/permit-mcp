@@ -422,12 +422,14 @@ it, so a failure stops the release before anything is uploaded.
 | `build` | `uv build --no-sources` once, with uv pinned by version and checksum and no cache, then `check_dist.py`: the files ship the package and nothing else, and the wheel declares the version, `requires-python` and dependencies of `pyproject.toml` |
 | `scan` | `audit-deps.sh`; fails on a fixable HIGH or CRITICAL advisory in the runtime trees (newest and lowest versions) |
 | `publish` | Waits for a reviewer to approve the `pypi` environment, checks that the `dist` artifact `build` uploaded holds exactly the tag's wheel and sdist, and uploads them with PEP 740 attestations |
+| `verify` | After `publish`: waits up to 15 minutes for PyPI to serve the version, downloads its wheel and sdist, checks that they are the files `build` made (SHA-256), verifies the PEP 740 attestations PyPI holds for each against this repository, `release.yml` and the `pypi` environment with `pypi-attestations verify pypi` (the `release` dependency group in `uv.lock`), and runs `permit-mcp` from PyPI's wheel in a fresh environment with an empty environment, which must exit 2 (`.github/scripts/verify-release.sh`) |
 | `docs` | Runs `pages.yml`: builds the API reference site from the tag and deploys it to GitHub Pages (see [the API reference site](#the-api-reference-site)) |
 
 Running the workflow by hand (Actions, Release, Run workflow) is a dry run: every job but
-`publish`, which runs on release events only. In a called run `github.workflow` is the
-caller's name, so `ci.yml`'s live-spec drift check and Slack notification, which run when it is
-`CI`, do not run in a release or a dry run.
+`publish`, `verify` and `docs`. `publish` and `verify` run on release events only, and `docs`
+needs `publish`. In a called run `github.workflow` is the caller's name, so `ci.yml`'s
+live-spec drift check and Slack notification, which run when it is `CI`, do not run in a release
+or a dry run.
 
 `release.yml` calls `ci.yml` and `pages.yml`, and GitHub refuses the whole release run when a
 called job asks for a permission the calling job does not grant. `test_workflows.py` fails when
@@ -450,6 +452,13 @@ A published tag is not moved. When a job before `publish` fails for a reason a r
 re-run it from the Actions page. When the release itself is wrong, fix it on `main` and release
 the next patch version. Do the same when `publish` fails part-way, after uploading one of the
 two files: PyPI never accepts a file name twice, even after the file is deleted.
+
+`verify` runs once the files are public, so it cannot hold them back. When it exits 2, PyPI did
+not serve the version within 15 minutes, or a download or a tool failed: that is no verdict, so
+re-run the job. When it exits 1, PyPI serves other files than `build` made, a file's
+attestations are missing, from another publisher or do not verify, or the wheel's `permit-mcp`
+does not run: yank the release on PyPI (the project's Manage page, Releases, Options, Yank),
+find out why, and release the next patch version.
 
 ### Repository setup
 
