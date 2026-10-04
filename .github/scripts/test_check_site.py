@@ -17,7 +17,11 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 
 sys.path.insert(0, str(SCRIPT.parent))
 
-from check_site import built_page, read_config  # noqa: E402 - importable once sys.path has it
+from check_site import (  # noqa: E402 - importable once sys.path has it
+    API_PAGE,
+    built_page,
+    read_config,
+)
 
 MKDOCS = """site_name: planted
 site_url: https://example.github.io/planted/
@@ -25,6 +29,7 @@ site_url: https://example.github.io/planted/
 nav:
   - Home: index.md
   - API: reference/api.md
+  - Guide: guide.md
 
 plugins: []
 """
@@ -33,21 +38,22 @@ plugins: []
 def plant(root: Path, *, mkdocs: str = MKDOCS, pages: dict[str, str] | None = None) -> Path:
     """A built checkout: mkdocs.yml, docs/ with `pages`, and site/ with each nav page built.
 
-    Each built page has its Markdown copy, index.md, beside it.
+    Each built page but the API page has its Markdown copy, index.md, beside it.
     """
     (root / "mkdocs.yml").write_text(mkdocs, encoding="utf-8")
-    pages = pages or {"index.md": "# Home\n", "reference/api.md": "# API\n"}
+    pages = pages or {"index.md": "# Home\n", "reference/api.md": "# API\n", "guide.md": "# G\n"}
     for source, text in pages.items():
         (root / "docs" / source).parent.mkdir(parents=True, exist_ok=True)
         (root / "docs" / source).write_text(text, encoding="utf-8")
-    for built in ("index.html", "reference/api/index.html"):
+    for built in ("index.html", "reference/api/index.html", "guide/index.html"):
         (root / "site" / built).parent.mkdir(parents=True, exist_ok=True)
         (root / "site" / built).write_text(
             "<a href='reference/api/'>API</a><a href='/planted/'>Home</a>"
             "<img src='../assets/logo.svg'><a href='https://docs.permit.io/'>guides</a>",
             encoding="utf-8",
         )
-        (root / "site" / built).with_name("index.md").write_text("# Page\n", encoding="utf-8")
+        if built != "reference/api/index.html":
+            (root / "site" / built).with_name("index.md").write_text("# Page\n", encoding="utf-8")
     return root
 
 
@@ -63,7 +69,7 @@ def check(root: Path) -> subprocess.CompletedProcess[str]:
 def test_a_complete_site_passes(tmp_path: Path) -> None:
     completed = check(plant(tmp_path))
     assert completed.returncode == 0, completed.stdout
-    assert "every nav page and its Markdown copy, no orphan page" in completed.stdout
+    assert "every nav page, their Markdown copies, no orphan page" in completed.stdout
 
 
 def test_a_nav_page_that_was_not_built_fails(tmp_path: Path) -> None:
@@ -78,8 +84,7 @@ def test_a_nav_page_that_was_not_built_fails(tmp_path: Path) -> None:
 
 
 @pytest.mark.parametrize(
-    ("copy", "source"),
-    [("site/index.md", "index.md"), ("site/reference/api/index.md", "reference/api.md")],
+    ("copy", "source"), [("site/index.md", "index.md"), ("site/guide/index.md", "guide.md")]
 )
 def test_a_nav_page_without_its_markdown_copy_fails(tmp_path: Path, copy: str, source: str) -> None:
     root = plant(tmp_path)
@@ -92,9 +97,21 @@ def test_a_nav_page_without_its_markdown_copy_fails(tmp_path: Path, copy: str, s
     )
 
 
+def test_the_api_page_needs_no_markdown_copy(tmp_path: Path) -> None:
+    root = plant(tmp_path)
+    assert not (root / "site" / "reference" / "api" / "index.md").exists()
+    assert check(root).returncode == 0
+    assert API_PAGE == "reference/api.md"
+
+
 @pytest.mark.parametrize("orphan", ["orphan.md", "reference/orphan.md"])
 def test_a_page_left_out_of_nav_fails(tmp_path: Path, orphan: str) -> None:
-    pages = {"index.md": "# Home\n", "reference/api.md": "# API\n", orphan: "# Orphan\n"}
+    pages = {
+        "index.md": "# Home\n",
+        "reference/api.md": "# API\n",
+        "guide.md": "# G\n",
+        orphan: "# Orphan\n",
+    }
     completed = check(plant(tmp_path, pages=pages))
     assert completed.returncode == 1
     assert f"docs/{orphan} is not in mkdocs.yml's nav" in completed.stdout
@@ -113,7 +130,7 @@ def test_a_link_from_the_host_s_root_fails(tmp_path: Path, tag: str) -> None:
 
 
 def test_a_missing_snippet_fails_even_when_its_page_was_built(tmp_path: Path) -> None:
-    pages = {"index.md": '--8<-- "README.md"\n', "reference/api.md": "# API\n"}
+    pages = {"index.md": '--8<-- "README.md"\n', "reference/api.md": "# API\n", "guide.md": ""}
     root = plant(tmp_path, pages=pages)
     assert check(root).returncode == 1
     assert "docs/index.md includes README.md, which is missing" in check(root).stdout
@@ -154,4 +171,5 @@ def test_the_repository_s_mkdocs_yml_is_read() -> None:
     sources, site_path = read_config(REPO_ROOT / "mkdocs.yml")
     assert sources[0] == "index.md"
     assert "reference/tools.md" in sources
+    assert API_PAGE in sources
     assert site_path == "/permit-mcp/"

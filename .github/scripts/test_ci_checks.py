@@ -1279,7 +1279,7 @@ def test_build_docs_writes_each_page_s_markdown_copy_after_the_build(tmp_path: P
     )
     assert completed.returncode == 0, completed.stdout + completed.stderr
     assert (tmp_path / "site" / "index.md").read_text() == "# Home\n"
-    assert "every nav page and its Markdown copy" in completed.stdout
+    assert "every nav page, their Markdown copies" in completed.stdout
 
 
 def test_build_docs_fails_when_the_markdown_copies_cannot_be_written(tmp_path: Path) -> None:

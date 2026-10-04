@@ -7,8 +7,9 @@ Run after `zensical build`, from the repository root or with --root. Zensical
 0.0.65 ignores the nav and absolute-link settings of mkdocs.yml's `validation`,
 and drops a page whose snippet include is missing without a word. So this checks:
 
-- every page in mkdocs.yml's `nav` was built into site/ (directory URLs), with
-  its Markdown copy, index.md, beside its index.html, which llms.txt links;
+- every page in mkdocs.yml's `nav` was built into site/ (directory URLs), and
+  every one but the API reference page has its Markdown copy, index.md, beside
+  its index.html, which llms.txt links;
 - every Markdown file in docs/ is in `nav`, so none is built but unlisted;
 - no href or src in site/ starts with "/" outside the site's own path, which
   a project site at https://<owner>.github.io/<repo>/ would send off the site;
@@ -34,6 +35,8 @@ CANNOT_CHECK = 2
 NAV_ENTRY = re.compile(r"^  - (?P<title>[^:]+): (?P<source>\S+\.md)$")
 SITE_URL = re.compile(r"^site_url: (?P<url>\S+)$", re.MULTILINE)
 SNIPPET = re.compile(r"""^\s*-+8<-+\s+(["'])(?P<path>[^"']+)\1\s*$""", re.MULTILINE)
+# Rendered from docstrings, so scripts/docs_pages.py writes no Markdown copy of it.
+API_PAGE = "reference/api.md"
 
 
 class ConfigError(Exception):
@@ -115,7 +118,8 @@ def problems(root: Path) -> list[str]:
     found += [
         f"nav lists {source}, but the build wrote no {copy.relative_to(root)}, its Markdown copy"
         for source in sources
-        if not (copy := built_page(site, source).with_name("index.md")).is_file()
+        if source != API_PAGE
+        and not (copy := built_page(site, source).with_name("index.md")).is_file()
     ]
     found += [
         f"{path.relative_to(root)} is not in mkdocs.yml's nav"
@@ -148,7 +152,7 @@ def main() -> int:
     if found:
         return PROBLEMS
     print(
-        "The site has every nav page and its Markdown copy, no orphan page, no root-relative"
+        "The site has every nav page, their Markdown copies, no orphan page, no root-relative"
         " link, every snippet."
     )
     return PASS

@@ -7,7 +7,6 @@ which this suite does not install.
 from __future__ import annotations
 
 import importlib.util
-import inspect
 import json
 import re
 import shutil
@@ -163,11 +162,15 @@ def test_the_tools_page_says_which_settings_it_shows(docs_pages: ModuleType) -> 
     assert "the `default` tenant" in page
 
 
-def test_llms_txt_links_every_page_s_markdown_copy_in_nav_order(docs_pages: ModuleType) -> None:
+def test_llms_txt_links_every_page_in_nav_order(docs_pages: ModuleType) -> None:
     text = docs_pages.llms_txt()
     links = re.findall(r"^- \[([^]]+)\]\((\S+)\): ", text, flags=re.MULTILINE)
-    assert links[: len(nav())] == [(title, docs_pages.copy_url(source)) for title, source in nav()]
-    assert links[0][1] == "https://permitio.github.io/permit-mcp/index.md"
+    assert links[: len(nav())] == [
+        ("Overview", "https://permitio.github.io/permit-mcp/index.md"),
+        ("Embedding API", "https://permitio.github.io/permit-mcp/reference/api/"),
+        ("Tools", "https://permitio.github.io/permit-mcp/reference/tools/index.md"),
+        ("Upgrading to 1.0", "https://permitio.github.io/permit-mcp/upgrade-to-1.0/index.md"),
+    ]
     assert re.match(r"# permit-mcp\n\n> \S", text), "llms.txt opens with a title and a summary"
 
 
@@ -228,14 +231,10 @@ def copies(docs_pages: ModuleType, tmp_path_factory: pytest.TempPathFactory) -> 
     }
 
 
-def test_every_page_has_its_markdown_copy_beside_it(
-    docs_pages: ModuleType, copies: dict[str, str]
+def test_every_page_but_the_api_page_has_its_markdown_copy_beside_it(
+    copies: dict[str, str],
 ) -> None:
-    expected = [f"{docs_pages.page_dir(source)}index.md" for _, source in nav()]
-    assert sorted(copies) == sorted(expected)
-    llms = docs_pages.llms_txt()
-    for path in expected:
-        assert f"({SITE}{path})" in llms
+    assert sorted(copies) == ["index.md", "reference/tools/index.md", "upgrade-to-1.0/index.md"]
 
 
 def test_the_overview_s_copy_is_the_readme(copies: dict[str, str]) -> None:
@@ -255,118 +254,12 @@ def test_the_tools_page_s_copy_links_the_overview_s_copy(copies: dict[str, str])
     assert "../index.md" not in page
 
 
-def test_the_api_page_s_copy_renders_every_export(copies: dict[str, str]) -> None:
-    page = copies["reference/api/index.md"]
-    assert ":::" not in page
-    assert "options:" not in page
-    headings = re.findall(r"^## `(\w+)`$", page, flags=re.MULTILINE)
-    assert sorted(headings) == sorted(name for name in permit_mcp.__all__ if name != "__version__")
-    assert f"[README]({SITE}index.md#embedding-the-tools)" in page
-    assert f"[Tools]({SITE}reference/tools/index.md)" in page
-
-
-def test_the_api_page_s_copy_shows_signatures_and_docstrings(docs_pages: ModuleType) -> None:
-    page = docs_pages.api_page(
-        "Intro.\n\n::: permit_mcp.PermitTools\n\n::: permit_mcp.IdentityResolver\n"
-        "    options:\n      members: [__call__]\n\n::: permit_mcp.TOOL_NAMES\n"
-        "    options:\n      show_attribute_values: false\n\n::: permit_mcp.bound_user\n"
-        "\n::: permit_mcp.ConfigError\n"
-    )
-    doc = inspect.getdoc
-    expected = [
-        "Intro.",
-        "",
-        "## `PermitTools`",
-        "",
-        "```python",
-        "class PermitTools(settings: Settings, identity: IdentityResolver)",
-        "```",
-        "",
-        doc(permit_mcp.PermitTools),
-        "",
-        "### `PermitTools.register`",
-        "",
-        "```python",
-        "def register(server: MCPServer[Any], *, exclude: Collection[str] = ()) -> list[str]",
-        "```",
-        "",
-        doc(permit_mcp.PermitTools.register),
-        "",
-        "### `PermitTools.aclose`",
-        "",
-        "```python",
-        "async def aclose() -> None",
-        "```",
-        "",
-        doc(permit_mcp.PermitTools.aclose),
-        "",
-        "## `IdentityResolver`",
-        "",
-        "```python",
-        "class IdentityResolver(Protocol)",
-        "```",
-        "",
-        doc(permit_mcp.IdentityResolver),
-        "",
-        "### `IdentityResolver.__call__`",
-        "",
-        "```python",
-        "async def __call__(ctx: Context[Any, Any], /) -> str",
-        "```",
-        "",
-        doc(permit_mcp.IdentityResolver.__call__),
-        "",
-        "## `TOOL_NAMES`",
-        "",
-        "```python",
-        f"TOOL_NAMES: tuple[str, ...] = {TOOL_NAMES!r}",
-        "```",
-        "",
-        "The names of all tools, in the order `PermitTools.register` registers them.",
-        "",
-        "## `bound_user`",
-        "",
-        "```python",
-        "def bound_user(user_key: str) -> IdentityResolver",
-        "```",
-        "",
-        doc(permit_mcp.bound_user),
-        "",
-        "## `ConfigError`",
-        "",
-        "```python",
-        "class ConfigError(Exception)",
-        "```",
-        "",
-        doc(permit_mcp.ConfigError),
-    ]
-    assert page == "\n".join(line or "" for line in expected) + "\n"
-
-
-def test_a_class_method_is_rendered_without_cls(docs_pages: ModuleType) -> None:
-    page = docs_pages.api_page("::: permit_mcp.Settings\n")
-    assert "class Settings(*, api_key: str, resource: str, tenant: str = 'default'," in page
-    assert f"api_url: str = '{DEFAULT_API_URL}', pdp_url: str = '{DEFAULT_PDP_URL}'," in page
-    assert "### `Settings.from_env`" in page
-    assert (
-        "\ndef from_env(environ: Mapping[str, str] | None = None, **overrides: str | None)"
-        " -> Self\n"
-    ) in page
-
-
-def test_an_export_without_a_docstring_cannot_be_rendered(
-    docs_pages: ModuleType, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    monkeypatch.setattr(permit_mcp, "UNDOCUMENTED", (), raising=False)
-    with pytest.raises(LookupError, match=r"permit_mcp\.UNDOCUMENTED is not an annotated"):
-        docs_pages.api_page("::: permit_mcp.UNDOCUMENTED\n")
-
-
 @pytest.mark.parametrize(
     ("source", "text", "linked"),
     [
-        ("reference/api.md", "[a](../index.md#x)", f"[a]({SITE}index.md#x)"),
-        ("reference/api.md", "[a](tools.md)", f"[a]({SITE}reference/tools/index.md)"),
+        ("reference/tools.md", "[a](../index.md#x)", f"[a]({SITE}index.md#x)"),
+        ("reference/tools.md", "[a](api.md#y)", f"[a]({SITE}reference/api/#y)"),
+        ("index.md", "[a](reference/tools.md)", f"[a]({SITE}reference/tools/index.md)"),
         ("index.md", "[a](upgrade-to-1.0.md)", f"[a]({SITE}upgrade-to-1.0/index.md)"),
         ("index.md", "[a](#anchor)", "[a](#anchor)"),
         ("index.md", "[a](https://x.example/a.md)", "[a](https://x.example/a.md)"),

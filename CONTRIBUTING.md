@@ -111,10 +111,10 @@ mutmut works in `mutants/`, which the gate deletes first. CI also limits each te
 [Zensical](https://zensical.org) and mkdocstrings-python, which the `docs` dependency group pins.
 It holds the README, the upgrade guide, the embedding API rendered from the docstrings
 (`docs/reference/api.md`), and a Tools page that `scripts/docs_pages.py` writes from the tools a
-real server lists, along with `llms.txt`. Beside each page's `index.html` the site serves its
-Markdown as `index.md`, which `llms.txt` links: the README, the upgrade guide and the Tools page
-as they are, and the embedding API with each `:::` entry replaced by that export's signature and
-docstring. Guides stay on
+real server lists, along with `llms.txt`. Beside the `index.html` of each page whose source is
+Markdown (the README, the upgrade guide and the Tools page) the site serves that Markdown as
+`index.md`, which `llms.txt` links. The embedding API page is rendered from docstrings, so it
+has no copy, and `llms.txt` links its HTML. Guides stay on
 [docs.permit.io](https://docs.permit.io/ai-security/access-request-mcp/overview).
 
 ```shell
@@ -130,9 +130,9 @@ broken links or anchors. It builds with `--clean`, because a cached build does n
 warnings of the pages it reuses. Zensical ignores the nav and absolute-link settings of
 `validation` in `mkdocs.yml`, and drops a page whose snippet include is missing without a word,
 so `.github/scripts/check_site.py` then checks what was built: every `nav` page has its HTML
-file and its `index.md` copy, every Markdown file in `docs/` is in `nav`, no `href` or `src`
-starts with `/` outside the site's path (`/permit-mcp/`), and every `--8<--` include names a
-file that exists.
+file and, but the embedding API page, its `index.md` copy, every Markdown file in `docs/` is in
+`nav`, no `href` or `src` starts with `/` outside the site's path (`/permit-mcp/`), and every
+`--8<--` include names a file that exists.
 
 The config stays in `mkdocs.yml` so that MkDocs with Material for MkDocs can build the site if
 Zensical cannot. When you add a page, add it to `nav` in `mkdocs.yml` and to `PAGES` in

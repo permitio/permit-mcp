@@ -9,8 +9,9 @@
 # server lists other tools than TOOL_NAMES. Then builds with Zensical from a
 # clean cache, since a cached build does not repeat the warnings of the pages
 # it reuses; --clean also empties site/. After a build that succeeded, writes
-# each page's Markdown copy, index.md beside its index.html (docs_pages.py
-# copies), which llms.txt links.
+# the Markdown copy of each page whose source is Markdown, index.md beside its
+# index.html (docs_pages.py copies), which llms.txt links. The API reference
+# page is rendered from docstrings and has none.
 #
 # `zensical build --strict` stops on a broken link or anchor and on an
 # unresolved cross-reference. It prints Griffe's warnings about a docstring
@@ -19,14 +20,14 @@
 # "Warning:" and "griffe:" line. Zensical ignores the nav and absolute-link
 # settings of mkdocs.yml's `validation`, and drops a page whose snippet include
 # is missing without a word, so check_site.py then checks site/ and docs/: every
-# nav page was built and has its Markdown copy, no page in docs/ is left out of
-# nav, no link starts with
-# "/" outside the site's path, and every snippet include exists. It runs after
-# a failed build too, so a missing snippet is named whatever else failed.
+# nav page was built and, but the API reference page, has its Markdown copy, no
+# page in docs/ is left out of nav, no link starts with "/" outside the site's
+# path, and every snippet include exists. It runs after a failed build too, so
+# a missing snippet is named whatever else failed.
 #
 # Exits 1 on a failed build, a warning or another unexpected line, Markdown
-# copies that could not be written, or a problem check_site.py found, and 2 when the build did not finish or check_site.py
-# could not read mkdocs.yml.
+# copies that could not be written, or a problem check_site.py found, and 2
+# when the build did not finish or check_site.py could not read mkdocs.yml.
 set -euo pipefail
 
 clean_lines='Build started|No issues found|Build finished in [0-9.]+ ?[a-zµ]*s'
