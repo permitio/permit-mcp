@@ -289,7 +289,8 @@ class PermitApi:
     ) -> object:
         """List the operation approvals of the configured element that `user` may see.
 
-        The element scopes the listing, so no resource filter is sent.
+        Permit's operation-approval listing is not scoped by the element in its path, so the
+        server's resource scopes it.
 
         Args:
             user: Key of the acting user.
@@ -303,6 +304,7 @@ class PermitApi:
 
         """
         query: dict[str, str | int | None] = {
+            "resource": self._settings.resource,
             "status": status,
             "resource_instance": resource_instance,
             "page": page,

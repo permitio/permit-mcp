@@ -324,8 +324,8 @@ class PermitTools:
             "list_operation_approvals": (
                 self._list_operation_approvals,
                 (
-                    "List the operation approval requests of this server's operation approval "
-                    f"element that Permit shows the acting user, {with_requester}. {acting}"
+                    f"List the operation approval requests on {target} that Permit shows the "
+                    f"acting user, {with_requester}. {acting}"
                 ),
                 _READ,
             ),

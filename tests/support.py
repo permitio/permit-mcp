@@ -399,6 +399,7 @@ CASES: dict[str, Case] = {
                 "GET",
                 OA_PATH,
                 query={
+                    "resource": RESOURCE,
                     "status": "pending",
                     "resource_instance": "doc-1",
                     "page": "2",

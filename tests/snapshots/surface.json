@@ -760,7 +760,7 @@
         "openWorldHint": false,
         "readOnlyHint": true
       },
-      "description": "List the operation approval requests of this server's operation approval element that Permit shows the acting user, each with the requesting user's email and name. Acts as the caller's Permit user.",
+      "description": "List the operation approval requests on the 'documents' resource type in tenant 'acme' that Permit shows the acting user, each with the requesting user's email and name. Acts as the caller's Permit user.",
       "input_schema": {
         "properties": {
           "page": {

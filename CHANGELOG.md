@@ -74,6 +74,7 @@ The first release on PyPI. To upgrade from the 0.1 server, follow the
 - Every request uses `PERMIT_API_URL` instead of a fixed `https://api.permit.io`.
 - Requests time out after 30 seconds. Cookies are not stored. All calls share one HTTP session.
 - The list tools no longer look up each requesting user (`GET /v2/facts/.../users/{id}`).
-- The list tools no longer send a `resource` filter; the element already scopes the listing.
-  Bug fix: with an RBAC User Management element, `list_access_requests` always came back
-  empty, because Permit never matched that filter.
+- `list_access_requests` no longer sends a `resource` filter; the element already scopes the
+  listing. Bug fix: with an RBAC User Management element, it always came back empty, because
+  Permit never matched that filter. `list_operation_approvals` keeps the filter: Permit's
+  operation-approval listing is not scoped by the element.

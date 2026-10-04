@@ -164,23 +164,41 @@ async def test_login_http_error_fails_before_the_elements_call(
     assert recorded(api) == [login_call()]
 
 
-@pytest.mark.parametrize("name", LIST_TOOLS)
 @pytest.mark.parametrize("filtered", [True, False], ids=["filters", "no-filters"])
-async def test_list_query_carries_no_resource(
-    api: HTTPServer, settings: Settings, name: str, *, filtered: bool
+async def test_access_request_list_carries_no_resource(
+    api: HTTPServer, settings: Settings, *, filtered: bool
 ) -> None:
-    # The element scopes a listing. For an RBAC element, Permit matches a resource filter
-    # against a value it never stores, and lists nothing.
-    case = CASES[name]
+    # The element scopes the access-request listing. For an RBAC element, Permit matches a
+    # resource filter against a value it never stores, and lists nothing.
+    case = CASES["list_access_requests"]
     serve_case(api, case)
 
-    result = await call_tool(settings, name, case.arguments if filtered else {})
+    result = await call_tool(settings, "list_access_requests", case.arguments if filtered else {})
 
     payload(result)
     listing = recorded(api)[-1]
     assert listing.path == case.calls[-1].path
     assert "resource" not in listing.query
     assert RESOURCE not in listing.query.values()
+
+
+@pytest.mark.parametrize("filtered", [True, False], ids=["filters", "no-filters"])
+async def test_operation_approval_list_is_scoped_to_the_resource(
+    api: HTTPServer, settings: Settings, *, filtered: bool
+) -> None:
+    # Permit's operation-approval listing ignores the element in its path, so without the
+    # resource filter it would list the approvals of every resource type.
+    case = CASES["list_operation_approvals"]
+    serve_case(api, case)
+
+    result = await call_tool(
+        settings, "list_operation_approvals", case.arguments if filtered else {}
+    )
+
+    payload(result)
+    listing = recorded(api)[-1]
+    assert listing.path == case.calls[-1].path
+    assert listing.query["resource"] == RESOURCE
 
 
 @pytest.mark.parametrize("name", LIST_TOOLS)
@@ -221,7 +239,7 @@ async def test_list_operation_approvals_omits_unset_filters(
     listing = Call(
         "GET",
         OA_PATH,
-        query={"page": "1", "per_page": "30"},
+        query={"resource": RESOURCE, "page": "1", "per_page": "30"},
         authorization=ELEMENT_AUTH,
     )
     serve_json(api, login_call(), LOGIN_RESPONSE)

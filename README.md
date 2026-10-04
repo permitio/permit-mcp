@@ -134,7 +134,7 @@ and the default tenant.
 | `deny_access_request` | Deny an access request. |
 | `cancel_access_request` | Cancel an access request. |
 | `create_operation_approval` | Request one-time approval for an operation on the 'documents' resource type in tenant 'default', or on one instance of it. |
-| `list_operation_approvals` | List the operation approval requests of this server's operation approval element that Permit shows the acting user, each with the requesting user's email and name. |
+| `list_operation_approvals` | List the operation approval requests on the 'documents' resource type in tenant 'default' that Permit shows the acting user, each with the requesting user's email and name. |
 | `approve_operation_approval` | Approve an operation approval request. |
 | `deny_operation_approval` | Deny an operation approval request. |
 | `cancel_operation_approval` | Cancel an operation approval request. |
