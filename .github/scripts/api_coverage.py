@@ -40,9 +40,10 @@ untested and missing operations per API and stage.
 
 With --e2e-record and --e2e-origins, a record and origins file the end-to-end suite wrote
 in the same format, the report also says, for each in-scope operation, whether it was
-exercised end to end: whether a request of that record, matched as above, got a 2xx or
-3xx answer from it. An error answer or no answer does not count. Without them the column
-says "not run". The end-to-end record only fills the column: it never makes a finding.
+exercised end to end: whether a request of that record, matched as above, got a 2xx
+answer from it. A 3xx, an error answer or no answer does not count: the server never follows
+a redirect, and reports a 3xx as an error. Without them the column says "not run". The
+end-to-end record only fills the column: it never makes a finding.
 
 The report fails (exit 1) on a finding:
 
@@ -515,11 +516,15 @@ class EndToEnd:
 
     @property
     def answered(self) -> list[Request]:
-        """The requests that got a 2xx or 3xx answer: the only ones that exercise anything."""
+        """The requests that got a 2xx answer: the only ones that exercise anything.
+
+        The server never follows a redirect and reports a 3xx as an error, so a 3xx does not
+        count.
+        """
         return [
             r
             for r in self.requests
-            if r.status is not None and HTTPStatus.OK <= r.status < HTTPStatus.BAD_REQUEST
+            if r.status is not None and HTTPStatus.OK <= r.status < HTTPStatus.MULTIPLE_CHOICES
         ]
 
 
@@ -1099,7 +1104,7 @@ def _describe_e2e(e2e: EndToEnd | None) -> str:
     answered = _plural(len(e2e.answered), "request")
     return (
         f"{_plural(len(e2e.requests), 'request')} from {_plural(tests, 'test')}; "
-        f"{answered} got a 2xx or 3xx answer and count"
+        f"{answered} got a 2xx answer and count"
     )
 
 

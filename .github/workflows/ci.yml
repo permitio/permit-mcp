@@ -613,7 +613,7 @@ jobs:
           uv run --no-project --python 3.11 python .github/scripts/check_junit.py
           "$RUNNER_TEMP/junit.xml"
       # The API coverage report with its end-to-end column filled: which in-scope
-      # operations answered the suite above with a 2xx or 3xx. The offline record
+      # operations answered the suite above with a 2xx. The offline record
       # it also needs is written here, by the offline suite as the tests job's
       # locked leg runs it (same uv.lock, same Python), rather than downloaded
       # from that leg: this job then neither waits for the tests matrix nor is

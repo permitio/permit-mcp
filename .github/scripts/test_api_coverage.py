@@ -638,19 +638,19 @@ def test_an_end_to_end_record_fills_the_column(tmp_path: Path) -> None:
     assert result.returncode == 0, result.stdout
     assert "::error" not in result.stdout
     assert (
-        "- End-to-end record: 8 requests from 1 test; 6 requests got a 2xx or 3xx answer and count."
+        "- End-to-end record: 8 requests from 1 test; 5 requests got a 2xx answer and count."
     ) in result.stdout
     column = {(row[0], row[1]): row[-1] for row in operation_rows(result.stdout)}
     assert column[("Control plane", f"`{SCOPE[0]} {SCOPE[1]}`")] == "yes"
     assert column[("Control plane", f"`{AR_CREATE[0]} {AR_CREATE[1]}`")] == "yes"
-    assert column[("Control plane", f"`{OA_LIST[0]} {OA_LIST[1]}`")] == "yes"
     assert column[("PDP", "`POST /allowed`")] == "yes"
+    assert column[("Control plane", f"`{OA_LIST[0]} {OA_LIST[1]}`")] == "no", "a 3xx is an error"
     assert column[("Control plane", f"`{AR_APPROVE[0]} {AR_APPROVE[1]}`")] == "no"
     assert column[("Control plane", f"`{OA_DENY[0]} {OA_DENY[1]}`")] == "no"
-    assert list(column.values()).count("yes") == 4
+    assert list(column.values()).count("yes") == 3
     assert "not run" not in column.values()
     assert "| Control plane | GA | 2 | 2 | 0 | 0 | 1 |" in result.stdout
-    assert "| Control plane | EAP | 21 | 10 | 0 | 11 | 2 |" in result.stdout
+    assert "| Control plane | EAP | 21 | 10 | 0 | 11 | 1 |" in result.stdout
     assert "| PDP | GA | 1 | 1 | 0 | 0 | 1 |" in result.stdout
 
 
@@ -659,10 +659,13 @@ def test_an_end_to_end_record_fills_the_column(tmp_path: Path) -> None:
     [
         (200, "yes"),
         (204, "yes"),
-        (302, "yes"),
-        (399, "yes"),
+        (299, "yes"),
         (100, "no"),
         (199, "no"),
+        (300, "no"),
+        (302, "no"),
+        (307, "no"),
+        (399, "no"),
         (400, "no"),
         (403, "no"),
         (404, "no"),
@@ -670,7 +673,7 @@ def test_an_end_to_end_record_fills_the_column(tmp_path: Path) -> None:
         (None, "no"),
     ],
 )
-def test_only_a_2xx_or_3xx_end_to_end_answer_counts(
+def test_only_a_2xx_end_to_end_answer_counts(
     tmp_path: Path, status: int | None, exercised: str
 ) -> None:
     result = e2e_report(tmp_path, [e2e_line(*CHECK, status, origin=E2E_CLOUD_PDP)])

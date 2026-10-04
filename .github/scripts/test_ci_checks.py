@@ -499,7 +499,7 @@ def test_the_e2e_job_s_report_merges_the_end_to_end_record(tmp_path: Path) -> No
     assert "- Control plane: `.github/api-specs/control-plane.json`" in summary
     assert "- PDP: `.github/api-specs/pdp.json`" in summary
     assert "baseline" not in summary
-    assert "- End-to-end record: 3 requests from 1 test; 2 requests got a 2xx" in summary
+    assert "- End-to-end record: 3 requests from 1 test; 2 requests got a 2xx answer" in summary
     assert operation_row(summary, "Control plane", SCOPE)[-1] == "yes"
     assert operation_row(summary, "PDP", CHECK)[-1] == "yes"
     assert operation_row(summary, "Control plane", AR_CREATE)[-1] == "no"

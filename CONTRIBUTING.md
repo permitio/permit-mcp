@@ -287,10 +287,11 @@ Each in-scope operation has a stage: `EAP` when one of its tags ends in "(EAP)",
 `deprecated` when the spec marks it deprecated, otherwise `GA`. The report counts covered,
 untested and missing operations per API and stage, and lists each operation's stage.
 
-The "Exercised end to end" column says whether the end-to-end suite got a 2xx or 3xx answer
-from an operation. The suite records its requests the same way when `PERMIT_MCP_API_RECORD` is
-set; its fixtures declare the Permit API, the cloud PDP and the container PDP as origins. A 4xx
-or 5xx answer, or none, does not count, and the end-to-end record never makes a finding. Without
+The "Exercised end to end" column says whether the end-to-end suite got a 2xx answer from an
+operation. The suite records its requests the same way when `PERMIT_MCP_API_RECORD` is set; its
+fixtures declare the Permit API, the cloud PDP and the container PDP as origins. A 3xx, 4xx or
+5xx answer, or none, does not count (the server never follows a redirect, and reports a 3xx as
+an error), and the end-to-end record never makes a finding. Without
 `--e2e-record` and `--e2e-origins` the column says "not run", as in the `tests` job. The `e2e`
 job fills it: it records the suite to `e2e-record.jsonl`, runs the offline suite with a record
 of its own (the same tests from the same `uv.lock` as the `tests` job's locked leg, so the job
