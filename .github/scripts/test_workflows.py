@@ -130,6 +130,8 @@ ci.yml package
       "$RUNNER_TEMP/dist" pyproject.toml
   Run the console script from the installed wheel
     run: .github/scripts/ci-steps.sh smoke "$RUNNER_TEMP/dist"
+  Type-check the public API as a consumer
+    run: uv run --locked --only-dev .github/scripts/check-consumer-types.sh "$RUNNER_TEMP/dist"
 ci.yml docs
   Build the docs site
     run: .github/scripts/build-docs.sh

@@ -65,6 +65,27 @@ uv run --locked --only-dev pytest -c .github/scripts/pytest.ini -q .github/scrip
   python3 .github/scripts/surface_diff.py /tmp/base-surface.json tests/snapshots/surface.json
   ```
 
+### The consumer fixture
+
+`tests/consumer/consumer.py` uses the public API as a host would: every name in
+`permit_mcp.__all__` (`tests/test_consumer_fixture.py` checks that), and, in `misuses()`, lines
+that must stay errors, each marked `# type: ignore[<code>]` with the exact mypy code. The
+`package` job type-checks it against the wheel it built, installed with its dependencies in a
+fresh Python 3.11 environment, never against `src/`; the root mypy configuration leaves it out.
+The check is strict, with `warn_unused_ignores` and the error codes `pyproject.toml` enables. It
+fails when a line a host could write stops type-checking, and when a misuse starts to: its
+ignore is then unused. To run it locally:
+
+```shell
+uv build --no-sources --wheel --out-dir /tmp/dist
+uv run --locked --only-dev .github/scripts/check-consumer-types.sh /tmp/dist
+```
+
+When you change the public API on purpose, update the fixture in the same pull request: change
+the lines that use it, delete a misuse line that the new API accepts, and add one for a misuse
+it should refuse. When you add an export, import it from `permit_mcp` at the top of the fixture
+and use it.
+
 ### Mutation tests
 
 On a pull request, the `mutation` job runs [mutmut](https://github.com/boxed/mutmut), pinned in
@@ -140,7 +161,7 @@ and manual runs a skipped `e2e` fails CI, since there it means the job's `if:` b
 | --- | --- |
 | `prek` | `uv run --locked --only-dev prek run --all-files`, with a count of the hooks that passed, and a check that `CI` needs every job |
 | `tests` | `python -m pytest -q -W error` on Python 3.11 to 3.14, installed from the ranges in `pyproject.toml` at their newest (`highest`) and lowest (`lowest-direct`) versions, and on 3.13 from `uv.lock` (`uv sync --locked`); then a check that no test skipped. The `uv.lock` leg also runs the API coverage report (below), and on a pull request lists the surface snapshot's changes against the base branch |
-| `package` | `uv build --no-sources`, a check of the wheel and sdist contents and of the wheel's metadata against `pyproject.toml` (`check_dist.py`, as the release runs it), and the `permit-mcp` command from the installed wheel, which must exit 2 without configuration |
+| `package` | `uv build --no-sources`, a check of the wheel and sdist contents and of the wheel's metadata against `pyproject.toml` (`check_dist.py`, as the release runs it), the `permit-mcp` command from the installed wheel, which must exit 2 without configuration, and `check-consumer-types.sh`: mypy on `tests/consumer/consumer.py` against the installed wheel (see [the consumer fixture](#the-consumer-fixture)) |
 | `docs` | `.github/scripts/build-docs.sh`: builds the API reference site, fails on any warning, and checks what was built with `check_site.py` (see [the API reference site](#the-api-reference-site)) |
 | `example` | The food-ordering example (`examples/food-ordering-system`), a uv project with its own `uv.lock`: `uv sync --locked`, ruff (the root's configuration), mypy (the example's strict configuration) and its offline tests, then a check that no test skipped |
 | `audit` | Trivy on the runtime dependency trees (newest and lowest), the dev tree, the docs tree (the `docs` group) and the example's tree; fails on a fixable HIGH or CRITICAL advisory. In the run `release.yml` calls, the dev, docs and example trees are reported but do not fail it (the `gate-dev-tree` input) |

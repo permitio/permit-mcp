@@ -35,6 +35,10 @@ job, and how to take a dependency release younger than the 7-day cooldown. In sh
   and annotations, and the public API's signatures. After an intended change, run
   `UPDATE_SNAPSHOT=1 uv run pytest tests/test_surface.py` and commit the result. On a pull
   request CI labels each change BREAKING or non-breaking against the base branch.
+- **Consumer fixture.** `tests/consumer/consumer.py` uses every export the way a host would,
+  plus misuses marked `# type: ignore[<code>]`. CI type-checks it against the built wheel
+  (`.github/scripts/check-consumer-types.sh`). Update it with any intended public API change
+  (see CONTRIBUTING.md).
 - **Mutation gate.** On a pull request, mutmut mutates the changed lines of `src/permit_mcp`,
   and CI fails when the tests catch fewer than 80% of the mutants (see CONTRIBUTING.md).
 - **Wire cases.** Every tool has a case in `CASES` in `tests/support.py` that pins the exact

@@ -108,6 +108,9 @@ ban-relative-imports = "all"
 [tool.ruff.lint.per-file-ignores]
 "src/permit_mcp/_log.py" = ["TID251"]
 "tests/**/*.py" = ["S101", "D1", "PLR2004", "TID251"]
+# A host's program, type-checked alone against the installed wheel
+# (.github/scripts/check-consumer-types.sh), not part of the tests package.
+"tests/consumer/*.py" = ["INP001"]
 # The examples are projects of their own (examples/*/pyproject.toml), linted with this
 # configuration; their tests get the same allowances as this package's.
 "examples/*/tests/**/*.py" = ["S101", "D1", "PLR2004", "TID251"]
@@ -123,6 +126,8 @@ ban-relative-imports = "all"
 [tool.mypy]
 python_version = "3.11"
 files = ["src", "tests", "skills", "scripts"]
+# Checked against the installed wheel instead, by .github/scripts/check-consumer-types.sh.
+exclude = ["^tests/consumer/"]
 strict = true
 warn_unreachable = true
 enable_error_code = [

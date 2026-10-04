@@ -210,7 +210,9 @@ jobs:
   # Builds the wheel and sdist as a release does, checks what they hold with the
   # script the release workflow runs on what it publishes, and runs the console
   # script from the wheel installed in a fresh environment: with no
-  # configuration it must exit 2, a configuration error.
+  # configuration it must exit 2, a configuration error. Then type-checks a
+  # host's use of the public API (tests/consumer/consumer.py) against the
+  # installed wheel with the locked mypy (check-consumer-types.sh).
   package:
     name: package
     runs-on: ubuntu-24.04
@@ -240,6 +242,10 @@ jobs:
           "$RUNNER_TEMP/dist" pyproject.toml
       - name: Run the console script from the installed wheel
         run: .github/scripts/ci-steps.sh smoke "$RUNNER_TEMP/dist"
+      - name: Type-check the public API as a consumer
+        run: >-
+          uv run --locked --only-dev .github/scripts/check-consumer-types.sh
+          "$RUNNER_TEMP/dist"
 
   # Builds the API reference site as the Pages workflow does, with
   # build-docs.sh. It fails on any warning (a docstring Griffe cannot parse, an
