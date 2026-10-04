@@ -7,8 +7,10 @@ which this suite does not install.
 from __future__ import annotations
 
 import importlib.util
+import inspect
 import json
 import re
+import shutil
 import subprocess
 import sys
 from pathlib import Path
@@ -78,7 +80,7 @@ def sections(page: str) -> dict[str, str]:
 
 def test_the_script_writes_the_tools_page_and_llms_txt(tmp_path: Path) -> None:
     completed = subprocess.run(  # noqa: S603 - runs the script under test
-        [sys.executable, str(SCRIPT), "--docs-dir", str(tmp_path / "docs")],
+        [sys.executable, str(SCRIPT), "pages", "--docs-dir", str(tmp_path / "docs")],
         capture_output=True,
         text=True,
         check=False,
@@ -143,7 +145,7 @@ def test_the_script_fails_when_the_server_lists_other_tools(
         return []
 
     monkeypatch.setattr(docs_pages, "list_tools", no_tools)
-    monkeypatch.setattr(sys, "argv", ["docs_pages.py", "--docs-dir", str(tmp_path)])
+    monkeypatch.setattr(sys, "argv", ["docs_pages.py", "pages", "--docs-dir", str(tmp_path)])
     with pytest.raises(SystemExit, match="not TOOL_NAMES"):
         docs_pages.main()
     assert not (tmp_path / "reference" / "tools.md").exists()
@@ -161,10 +163,11 @@ def test_the_tools_page_says_which_settings_it_shows(docs_pages: ModuleType) -> 
     assert "the `default` tenant" in page
 
 
-def test_llms_txt_links_every_page_in_nav_order(docs_pages: ModuleType) -> None:
+def test_llms_txt_links_every_page_s_markdown_copy_in_nav_order(docs_pages: ModuleType) -> None:
     text = docs_pages.llms_txt()
     links = re.findall(r"^- \[([^]]+)\]\((\S+)\): ", text, flags=re.MULTILINE)
-    assert links[: len(nav())] == [(title, docs_pages.page_url(source)) for title, source in nav()]
+    assert links[: len(nav())] == [(title, docs_pages.copy_url(source)) for title, source in nav()]
+    assert links[0][1] == "https://permitio.github.io/permit-mcp/index.md"
     assert re.match(r"# permit-mcp\n\n> \S", text), "llms.txt opens with a title and a summary"
 
 
@@ -197,3 +200,193 @@ def test_the_api_page_documents_every_export() -> None:
     documented = re.findall(r"^::: permit_mcp\.(\w+)$", page, flags=re.MULTILINE)
     exported = [name for name in permit_mcp.__all__ if name != "__version__"]
     assert sorted(documented) == sorted(exported)
+
+
+# --- the Markdown copies beside the built pages ---------------------------------------------
+
+SITE = "https://permitio.github.io/permit-mcp/"
+
+
+@pytest.fixture(scope="module")
+def copies(docs_pages: ModuleType, tmp_path_factory: pytest.TempPathFactory) -> dict[str, str]:
+    """The copies `copies` writes into a site with every page built, by site path."""
+    root = tmp_path_factory.mktemp("built")
+    docs, site = root / "docs", root / "site"
+    shutil.copytree(DOCS, docs, ignore=shutil.ignore_patterns("llms.txt", "tools.md"))
+    run = [sys.executable, str(SCRIPT)]
+    subprocess.run([*run, "pages", "--docs-dir", str(docs)], check=True)  # noqa: S603
+    for _, source in nav():
+        built = site / docs_pages.page_dir(source) / "index.html"
+        built.parent.mkdir(parents=True, exist_ok=True)
+        built.write_text("<html></html>", encoding="utf-8")
+    subprocess.run(  # noqa: S603 - runs the script under test
+        [*run, "copies", "--docs-dir", str(docs), "--site-dir", str(site)], check=True
+    )
+    return {
+        path.relative_to(site).as_posix(): path.read_text(encoding="utf-8")
+        for path in sorted(site.rglob("index.md"))
+    }
+
+
+def test_every_page_has_its_markdown_copy_beside_it(
+    docs_pages: ModuleType, copies: dict[str, str]
+) -> None:
+    expected = [f"{docs_pages.page_dir(source)}index.md" for _, source in nav()]
+    assert sorted(copies) == sorted(expected)
+    llms = docs_pages.llms_txt()
+    for path in expected:
+        assert f"({SITE}{path})" in llms
+
+
+def test_the_overview_s_copy_is_the_readme(copies: dict[str, str]) -> None:
+    assert copies["index.md"] == (ROOT / "README.md").read_text(encoding="utf-8")
+
+
+def test_the_upgrade_guide_s_copy_is_its_source(copies: dict[str, str]) -> None:
+    source = (DOCS / "upgrade-to-1.0.md").read_text(encoding="utf-8")
+    assert copies["upgrade-to-1.0/index.md"] == source
+    assert "](#embedders)" in source, "an anchor on the same page is left alone"
+
+
+def test_the_tools_page_s_copy_links_the_overview_s_copy(copies: dict[str, str]) -> None:
+    page = copies["reference/tools/index.md"]
+    assert list(sections(page)) == list(TOOL_NAMES)
+    assert f"[README]({SITE}index.md#tools)" in page
+    assert "../index.md" not in page
+
+
+def test_the_api_page_s_copy_renders_every_export(copies: dict[str, str]) -> None:
+    page = copies["reference/api/index.md"]
+    assert ":::" not in page
+    assert "options:" not in page
+    headings = re.findall(r"^## `(\w+)`$", page, flags=re.MULTILINE)
+    assert sorted(headings) == sorted(name for name in permit_mcp.__all__ if name != "__version__")
+    assert f"[README]({SITE}index.md#embedding-the-tools)" in page
+    assert f"[Tools]({SITE}reference/tools/index.md)" in page
+
+
+def test_the_api_page_s_copy_shows_signatures_and_docstrings(docs_pages: ModuleType) -> None:
+    page = docs_pages.api_page(
+        "Intro.\n\n::: permit_mcp.PermitTools\n\n::: permit_mcp.IdentityResolver\n"
+        "    options:\n      members: [__call__]\n\n::: permit_mcp.TOOL_NAMES\n"
+        "    options:\n      show_attribute_values: false\n\n::: permit_mcp.bound_user\n"
+        "\n::: permit_mcp.ConfigError\n"
+    )
+    doc = inspect.getdoc
+    expected = [
+        "Intro.",
+        "",
+        "## `PermitTools`",
+        "",
+        "```python",
+        "class PermitTools(settings: Settings, identity: IdentityResolver)",
+        "```",
+        "",
+        doc(permit_mcp.PermitTools),
+        "",
+        "### `PermitTools.register`",
+        "",
+        "```python",
+        "def register(server: MCPServer[Any], *, exclude: Collection[str] = ()) -> list[str]",
+        "```",
+        "",
+        doc(permit_mcp.PermitTools.register),
+        "",
+        "### `PermitTools.aclose`",
+        "",
+        "```python",
+        "async def aclose() -> None",
+        "```",
+        "",
+        doc(permit_mcp.PermitTools.aclose),
+        "",
+        "## `IdentityResolver`",
+        "",
+        "```python",
+        "class IdentityResolver(Protocol)",
+        "```",
+        "",
+        doc(permit_mcp.IdentityResolver),
+        "",
+        "### `IdentityResolver.__call__`",
+        "",
+        "```python",
+        "async def __call__(ctx: Context[Any, Any], /) -> str",
+        "```",
+        "",
+        doc(permit_mcp.IdentityResolver.__call__),
+        "",
+        "## `TOOL_NAMES`",
+        "",
+        "```python",
+        f"TOOL_NAMES: tuple[str, ...] = {TOOL_NAMES!r}",
+        "```",
+        "",
+        "The names of all tools, in the order `PermitTools.register` registers them.",
+        "",
+        "## `bound_user`",
+        "",
+        "```python",
+        "def bound_user(user_key: str) -> IdentityResolver",
+        "```",
+        "",
+        doc(permit_mcp.bound_user),
+        "",
+        "## `ConfigError`",
+        "",
+        "```python",
+        "class ConfigError(Exception)",
+        "```",
+        "",
+        doc(permit_mcp.ConfigError),
+    ]
+    assert page == "\n".join(line or "" for line in expected) + "\n"
+
+
+def test_a_class_method_is_rendered_without_cls(docs_pages: ModuleType) -> None:
+    page = docs_pages.api_page("::: permit_mcp.Settings\n")
+    assert "class Settings(*, api_key: str, resource: str, tenant: str = 'default'," in page
+    assert f"api_url: str = '{DEFAULT_API_URL}', pdp_url: str = '{DEFAULT_PDP_URL}'," in page
+    assert "### `Settings.from_env`" in page
+    assert (
+        "\ndef from_env(environ: Mapping[str, str] | None = None, **overrides: str | None)"
+        " -> Self\n"
+    ) in page
+
+
+def test_an_export_without_a_docstring_cannot_be_rendered(
+    docs_pages: ModuleType, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(permit_mcp, "UNDOCUMENTED", (), raising=False)
+    with pytest.raises(LookupError, match=r"permit_mcp\.UNDOCUMENTED is not an annotated"):
+        docs_pages.api_page("::: permit_mcp.UNDOCUMENTED\n")
+
+
+@pytest.mark.parametrize(
+    ("source", "text", "linked"),
+    [
+        ("reference/api.md", "[a](../index.md#x)", f"[a]({SITE}index.md#x)"),
+        ("reference/api.md", "[a](tools.md)", f"[a]({SITE}reference/tools/index.md)"),
+        ("index.md", "[a](upgrade-to-1.0.md)", f"[a]({SITE}upgrade-to-1.0/index.md)"),
+        ("index.md", "[a](#anchor)", "[a](#anchor)"),
+        ("index.md", "[a](https://x.example/a.md)", "[a](https://x.example/a.md)"),
+        ("index.md", "[a](/abs.md)", "[a](/abs.md)"),
+        ("index.md", "[a](notes.txt)", "[a](notes.txt)"),
+    ],
+)
+def test_a_link_to_another_page_points_at_its_copy(
+    docs_pages: ModuleType, source: str, text: str, linked: str
+) -> None:
+    assert docs_pages.link_copies(text, source) == linked
+
+
+def test_copies_fail_when_the_site_was_not_built(tmp_path: Path) -> None:
+    completed = subprocess.run(  # noqa: S603 - runs the script under test
+        [sys.executable, str(SCRIPT), "copies", "--site-dir", str(tmp_path / "site")],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert completed.returncode == 1
+    assert "index.html was not built; build the site first." in completed.stderr
+    assert not (tmp_path / "site").exists()

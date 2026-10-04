@@ -1198,6 +1198,16 @@ UNRESOLVED_REFERENCE = (
 )
 COLOURED = "\x1b[1mBuild started\x1b[0m\nNo issues found\nBuild finished in 12ms\n"
 LINK = "<a href='x/'>x</a>"
+# docs_pages.py copies, as it behaves: index.md beside a built index.html, or exit 1.
+COPIES = (
+    'if [[ " $* " == *" copies "* ]]; then\n'
+    "  [[ -f site/index.html ]] || exit 1\n"
+    '  echo "# Home" >site/index.md; exit 0\n'
+    "fi\n"
+)
+PAGES = "run --locked --group docs python scripts/docs_pages.py pages"
+BUILD = "run --locked --group docs zensical build --strict --clean"
+WRITE_COPIES = "run --locked --group docs python scripts/docs_pages.py copies"
 
 
 def build_docs(tmp_path: Path, zensical: str) -> subprocess.CompletedProcess[str]:
@@ -1247,7 +1257,7 @@ def test_build_docs_fails_on_any_line_a_clean_build_does_not_print_and_what_it_d
     )
     completed = build_docs(
         tmp_path,
-        'if [[ " $* " != *" zensical "* ]]; then exit 0; fi\n'
+        COPIES + 'if [[ " $* " != *" zensical "* ]]; then exit 0; fi\n'
         f'{write_site}cat "{tmp_path}/zensical.log"\nexit {zensical_status}',
     )
     assert completed.returncode == status, completed.stdout + completed.stderr
@@ -1257,10 +1267,35 @@ def test_build_docs_fails_on_any_line_a_clean_build_does_not_print_and_what_it_d
         repeated = completed.stdout.split("::error title=Docs::", 1)[1]
         assert says in repeated
         assert "Build started" not in repeated, "only the unexpected lines are repeated"
-    assert (tmp_path / "uv.log").read_text().splitlines() == [
-        "run --locked --group docs python scripts/docs_pages.py",
-        "run --locked --group docs zensical build --strict --clean",
-    ]
+    copies = [WRITE_COPIES] if zensical_status == 0 else []
+    assert (tmp_path / "uv.log").read_text().splitlines() == [PAGES, BUILD, *copies]
+
+
+def test_build_docs_writes_each_page_s_markdown_copy_after_the_build(tmp_path: Path) -> None:
+    completed = build_docs(
+        tmp_path,
+        COPIES + 'if [[ " $* " == *" zensical "* ]]; then\n'
+        f'  mkdir -p site && echo "{LINK}" >site/index.html; printf "{CLEAN_BUILD}"\nfi',
+    )
+    assert completed.returncode == 0, completed.stdout + completed.stderr
+    assert (tmp_path / "site" / "index.md").read_text() == "# Home\n"
+    assert "every nav page and its Markdown copy" in completed.stdout
+
+
+def test_build_docs_fails_when_the_markdown_copies_cannot_be_written(tmp_path: Path) -> None:
+    completed = build_docs(
+        tmp_path,
+        'if [[ " $* " == *" copies "* ]]; then exit 1; fi\n'
+        'if [[ " $* " == *" zensical "* ]]; then\n'
+        f'  mkdir -p site && echo "{LINK}" >site/index.html; printf "{CLEAN_BUILD}"\nfi',
+    )
+    assert completed.returncode == 1
+    assert "nav lists index.md, but the build wrote no site/index.md, its Markdown copy" in (
+        completed.stdout
+    )
+    assert completed.stdout.rstrip().endswith(
+        "::error title=Docs::docs_pages.py could not write the Markdown copies of the pages."
+    )
 
 
 def test_build_docs_names_a_missing_snippet_when_the_build_also_failed(tmp_path: Path) -> None:

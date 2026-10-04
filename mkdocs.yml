@@ -1,7 +1,8 @@
 # The API reference site, built with Zensical (see CONTRIBUTING.md). Kept to the
 # mkdocs.yml format so MkDocs with Material for MkDocs can build it too.
 # scripts/docs_pages.py writes docs/reference/tools.md and docs/llms.txt before
-# the build; it lists the pages of `nav` for llms.txt, so change both together.
+# the build, and each page's Markdown copy into site/ after it; it lists the
+# pages of `nav` for llms.txt, so change both together.
 site_name: permit-mcp
 site_description: >-
   API reference of permit-mcp, the MCP server for Permit.io access requests,

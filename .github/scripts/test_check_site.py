@@ -31,7 +31,10 @@ plugins: []
 
 
 def plant(root: Path, *, mkdocs: str = MKDOCS, pages: dict[str, str] | None = None) -> Path:
-    """A built checkout: mkdocs.yml, docs/ with `pages`, and site/ with each nav page built."""
+    """A built checkout: mkdocs.yml, docs/ with `pages`, and site/ with each nav page built.
+
+    Each built page has its Markdown copy, index.md, beside it.
+    """
     (root / "mkdocs.yml").write_text(mkdocs, encoding="utf-8")
     pages = pages or {"index.md": "# Home\n", "reference/api.md": "# API\n"}
     for source, text in pages.items():
@@ -44,6 +47,7 @@ def plant(root: Path, *, mkdocs: str = MKDOCS, pages: dict[str, str] | None = No
             "<img src='../assets/logo.svg'><a href='https://docs.permit.io/'>guides</a>",
             encoding="utf-8",
         )
+        (root / "site" / built).with_name("index.md").write_text("# Page\n", encoding="utf-8")
     return root
 
 
@@ -59,7 +63,7 @@ def check(root: Path) -> subprocess.CompletedProcess[str]:
 def test_a_complete_site_passes(tmp_path: Path) -> None:
     completed = check(plant(tmp_path))
     assert completed.returncode == 0, completed.stdout
-    assert "every nav page, no orphan page" in completed.stdout
+    assert "every nav page and its Markdown copy, no orphan page" in completed.stdout
 
 
 def test_a_nav_page_that_was_not_built_fails(tmp_path: Path) -> None:
@@ -71,6 +75,21 @@ def test_a_nav_page_that_was_not_built_fails(tmp_path: Path) -> None:
         "::error title=Docs site::nav lists reference/api.md, but the build wrote no "
         "site/reference/api/index.html"
     ) in completed.stdout
+
+
+@pytest.mark.parametrize(
+    ("copy", "source"),
+    [("site/index.md", "index.md"), ("site/reference/api/index.md", "reference/api.md")],
+)
+def test_a_nav_page_without_its_markdown_copy_fails(tmp_path: Path, copy: str, source: str) -> None:
+    root = plant(tmp_path)
+    (root / copy).unlink()
+    completed = check(root)
+    assert completed.returncode == 1
+    assert completed.stdout == (
+        f"::error title=Docs site::nav lists {source}, but the build wrote no {copy}, its"
+        " Markdown copy\n"
+    )
 
 
 @pytest.mark.parametrize("orphan", ["orphan.md", "reference/orphan.md"])

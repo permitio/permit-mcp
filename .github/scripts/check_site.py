@@ -7,7 +7,8 @@ Run after `zensical build`, from the repository root or with --root. Zensical
 0.0.65 ignores the nav and absolute-link settings of mkdocs.yml's `validation`,
 and drops a page whose snippet include is missing without a word. So this checks:
 
-- every page in mkdocs.yml's `nav` was built into site/ (directory URLs);
+- every page in mkdocs.yml's `nav` was built into site/ (directory URLs), with
+  its Markdown copy, index.md, beside its index.html, which llms.txt links;
 - every Markdown file in docs/ is in `nav`, so none is built but unlisted;
 - no href or src in site/ starts with "/" outside the site's own path, which
   a project site at https://<owner>.github.io/<repo>/ would send off the site;
@@ -112,6 +113,11 @@ def problems(root: Path) -> list[str]:
         if not built_page(site, source).is_file()
     ]
     found += [
+        f"nav lists {source}, but the build wrote no {copy.relative_to(root)}, its Markdown copy"
+        for source in sources
+        if not (copy := built_page(site, source).with_name("index.md")).is_file()
+    ]
+    found += [
         f"{path.relative_to(root)} is not in mkdocs.yml's nav"
         for path in sorted(docs.rglob("*.md"))
         if path.relative_to(docs).as_posix() not in sources
@@ -141,7 +147,10 @@ def main() -> int:
         print(f"::error title=Docs site::{problem}")
     if found:
         return PROBLEMS
-    print("The site has every nav page, no orphan page, no root-relative link, every snippet.")
+    print(
+        "The site has every nav page and its Markdown copy, no orphan page, no root-relative"
+        " link, every snippet."
+    )
     return PASS
 
 

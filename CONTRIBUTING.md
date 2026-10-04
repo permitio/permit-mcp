@@ -111,13 +111,16 @@ mutmut works in `mutants/`, which the gate deletes first. CI also limits each te
 [Zensical](https://zensical.org) and mkdocstrings-python, which the `docs` dependency group pins.
 It holds the README, the upgrade guide, the embedding API rendered from the docstrings
 (`docs/reference/api.md`), and a Tools page that `scripts/docs_pages.py` writes from the tools a
-real server lists, along with `llms.txt`. Guides stay on
+real server lists, along with `llms.txt`. Beside each page's `index.html` the site serves its
+Markdown as `index.md`, which `llms.txt` links: the README, the upgrade guide and the Tools page
+as they are, and the embedding API with each `:::` entry replaced by that export's signature and
+docstring. Guides stay on
 [docs.permit.io](https://docs.permit.io/ai-security/access-request-mcp/overview).
 
 ```shell
-uv run --group docs python scripts/docs_pages.py   # write the Tools page and llms.txt
-uv run --group docs zensical serve                 # preview at http://localhost:8000
-.github/scripts/build-docs.sh                      # the CI check: build into site/
+uv run --group docs python scripts/docs_pages.py pages   # write the Tools page and llms.txt
+uv run --group docs zensical serve                       # preview at http://localhost:8000
+.github/scripts/build-docs.sh   # the CI check: build into site/, with the Markdown copies
 ```
 
 `build-docs.sh` fails when `docs_pages.py` sees other tools than `TOOL_NAMES`, and on any line
@@ -127,8 +130,9 @@ broken links or anchors. It builds with `--clean`, because a cached build does n
 warnings of the pages it reuses. Zensical ignores the nav and absolute-link settings of
 `validation` in `mkdocs.yml`, and drops a page whose snippet include is missing without a word,
 so `.github/scripts/check_site.py` then checks what was built: every `nav` page has its HTML
-file, every Markdown file in `docs/` is in `nav`, no `href` or `src` starts with `/` outside the
-site's path (`/permit-mcp/`), and every `--8<--` include names a file that exists.
+file and its `index.md` copy, every Markdown file in `docs/` is in `nav`, no `href` or `src`
+starts with `/` outside the site's path (`/permit-mcp/`), and every `--8<--` include names a
+file that exists.
 
 The config stays in `mkdocs.yml` so that MkDocs with Material for MkDocs can build the site if
 Zensical cannot. When you add a page, add it to `nav` in `mkdocs.yml` and to `PAGES` in
