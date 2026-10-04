@@ -14,6 +14,7 @@ import json
 import re
 import subprocess
 import sys
+import tomllib
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
@@ -425,3 +426,44 @@ def test_output_schema_check_fails_on_the_old_changelog_sentence() -> None:
     assert output_schema_problems(changelog, snapshot_tools()) == [
         f"CHANGELOG.md does not say: {OUTPUT_SCHEMA_CLAIM}"
     ]
+
+
+# The tools the 0.1 server registered, from its src/permit_mcp/server.py.
+TOOLS_0_1 = (
+    "list_resource_instances",
+    "create_access_request",
+    "list_access_requests",
+    "approve_access_request",
+    "deny_access_request",
+    "create_operation_approval",
+    "list_operation_approvals",
+    "approve_operation_approval",
+    "deny_operation_approval",
+)
+
+
+def kept_on_purpose() -> str:
+    """The 1.0.0 changelog's "Kept on purpose" section."""
+    changelog = CHANGELOG.read_text(encoding="utf-8")
+    section = changelog.split("### Kept on purpose\n", 1)[1]
+    return section.split("\n## ", 1)[0].split("\n### ", 1)[0]
+
+
+def test_the_kept_tool_names_and_variables_are_the_0_1_ones() -> None:
+    kept = kept_on_purpose()
+    assert set(TOOLS_0_1) <= set(TOOL_NAMES)
+    assert "The nine 0.1 tool names are unchanged; 1.0 adds three tools" in kept
+    assert (len(TOOLS_0_1), len(TOOL_NAMES) - len(TOOLS_0_1)) == (9, 3)
+    assert "`PERMIT_API_KEY` and `PERMIT_PDP_URL` keep their 0.1 names." in kept
+    assert {ENV_VARS["api_key"], ENV_VARS["pdp_url"]} == {"PERMIT_API_KEY", "PERMIT_PDP_URL"}
+
+
+def test_the_readme_lists_the_deprecations(readme: str) -> None:
+    assert "\n## Deprecations\n\nNone in 1.0." in readme
+
+
+def test_the_code_of_conduct_names_the_project_s_contact() -> None:
+    pyproject = tomllib.loads((ROOT / "pyproject.toml").read_text(encoding="utf-8"))
+    (email,) = [author["email"] for author in pyproject["project"]["authors"]]
+    conduct = (ROOT / "CODE_OF_CONDUCT.md").read_text(encoding="utf-8")
+    assert f"<{email}>" in conduct

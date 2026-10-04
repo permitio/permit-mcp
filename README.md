@@ -355,6 +355,11 @@ async def create_document(document_id: str, title: str) -> None:
     })
 ```
 
+## Deprecations
+
+None in 1.0. A future deprecation is listed here, with the version that removes it, and in the
+[changelog](https://github.com/permitio/permit-mcp/blob/main/CHANGELOG.md).
+
 ## Links
 
 - [Access Request MCP on docs.permit.io](https://docs.permit.io/ai-security/access-request-mcp/overview)

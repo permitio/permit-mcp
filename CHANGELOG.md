@@ -78,3 +78,16 @@ The first release on PyPI. To upgrade from the 0.1 server, follow the
   listing. Bug fix: with an RBAC User Management element, it always came back empty, because
   Permit never matched that filter. `list_operation_approvals` keeps the filter: Permit's
   operation-approval listing is not scoped by the element.
+
+### Kept on purpose
+
+Breaks 1.0 could have made and did not:
+
+- The nine 0.1 tool names are unchanged; 1.0 adds three tools and renames none.
+- `list_resource_instances` lists with the server's API key, as in 0.1, and is not filtered by
+  the caller's permissions. It still requires an identified caller.
+- Creating, listing, approving and denying access requests use the same facts routes as 0.1
+  (`/v2/facts/{project}/{environment}/access_requests/{element}/user/{user}/tenant/{tenant}`),
+  so Permit still applies the acting user's Elements permissions. Only the new cancel calls the
+  Elements config route.
+- `PERMIT_API_KEY` and `PERMIT_PDP_URL` keep their 0.1 names.
