@@ -1,16 +1,165 @@
+[build-system]
+# Must allow the uv version the release workflow pins, so releases build with
+# that uv's built-in backend. Bumped by hand with it.
+requires = ["uv_build>=0.12.19,<0.13"]
+build-backend = "uv_build"
+
 [project]
 name = "permit-mcp"
-version = "0.1.0"
-description = "Add your description here"
+version = "1.0.0"
+description = "MCP server for Permit.io access requests and operation approvals"
 readme = "README.md"
-requires-python = ">=3.10"
+requires-python = ">=3.11"
+license = "MIT"
+license-files = ["LICENSE"]
+authors = [{ name = "Permit.io", email = "support@permit.io" }]
+keywords = ["permit", "authorization", "mcp", "access-requests", "approvals"]
+classifiers = [
+    "Operating System :: OS Independent",
+    "Programming Language :: Python",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Programming Language :: Python :: 3.14",
+]
+# Open ranges on purpose: consumers resolve these against their own tree, so
+# the floors are the exposure that CI scans.
 dependencies = [
-    "aiosqlite>=0.21.0",
-    "mcp>=1.2.1",
-    "permit>=2.7.2",
-    "httpx>=0.28.1",
-    "python-dotenv>=1.0.1",
+    "aiohttp>=3.14.3,<4",
+    "mcp>=2.2.0,<3",
+    "pydantic>=2.12.0,<3",
 ]
 
-[tool.uv.workspace]
-members = ["examples/food-ordering-system"]
+[project.urls]
+Homepage = "https://github.com/permitio/permit-mcp"
+Repository = "https://github.com/permitio/permit-mcp"
+Issues = "https://github.com/permitio/permit-mcp/issues"
+Documentation = "https://docs.permit.io/ai-security/access-request-mcp/overview"
+Reference = "https://permitio.github.io/permit-mcp/"
+
+[project.scripts]
+permit-mcp = "permit_mcp.server:main"
+
+[dependency-groups]
+# Exact pins: uv.lock is the single source of these tool versions.
+dev = [
+    "httpx2==2.13.1",
+    "mutmut==3.8.0",
+    "mypy==2.3.1",
+    "prek==0.5.3",
+    "pytest==9.1.1",
+    "pytest-asyncio==1.4.0",
+    "pytest-httpserver==1.1.5",
+    "ruff==0.16.9",
+    "typos==1.50.3",
+    "uv==0.12.19",
+    "werkzeug==3.1.8",
+]
+# The API reference site (mkdocs.yml). Not installed by `uv sync`; see CONTRIBUTING.md.
+docs = [
+    "mkdocstrings==1.0.6",
+    "mkdocstrings-python==2.0.9",
+    "zensical==0.0.65",
+]
+# release.yml's verify job: checks the PEP 740 attestations PyPI holds for a release.
+# Not installed by `uv sync`.
+release = [
+    "pypi-attestations==0.0.30",
+]
+
+[tool.pytest]
+asyncio_mode = "auto"
+testpaths = ["tests"]
+# The end-to-end suite (tests/e2e) talks to the real Permit API, so a plain `pytest` leaves it
+# out: deselected, not skipped, so the check that no test skipped still holds. A later
+# `-m e2e` on the command line selects it instead (CONTRIBUTING.md).
+addopts = ["-m", "not e2e"]
+markers = [
+    "e2e: against the real Permit API in a scratch environment (CONTRIBUTING.md); -m e2e",
+]
+strict = true
+filterwarnings = ["error"]
+
+[tool.ruff]
+line-length = 100
+# prek passes file names explicitly; without this, excluded files would still be checked.
+force-exclude = true
+
+[tool.ruff.format]
+docstring-code-format = true
+
+[tool.ruff.lint]
+select = ["ALL"]
+ignore = [
+    "COM812",  # conflicts with the formatter
+    "CPY001",  # no per-file copyright headers; LICENSE covers the repository
+    "TRY003",  # messages that name the failing value are the point of these errors
+    "D100",    # module docstrings only where a module needs explaining
+    "D104",
+    "D105",
+    "D107",    # __init__ is documented in the class docstring
+]
+
+[tool.ruff.lint.pydocstyle]
+convention = "google"
+
+[tool.ruff.lint.flake8-tidy-imports]
+ban-relative-imports = "all"
+
+[tool.ruff.lint.flake8-tidy-imports.banned-api]
+"logging.getLogger".msg = "Use permit_mcp._log.get_logger, which redacts registered secrets."
+
+[tool.ruff.lint.per-file-ignores]
+"src/permit_mcp/_log.py" = ["TID251"]
+"tests/**/*.py" = ["S101", "D1", "PLR2004", "TID251"]
+# A host's program, type-checked alone against the installed wheel
+# (.github/scripts/check-consumer-types.sh), not part of the tests package.
+"tests/consumer/*.py" = ["INP001"]
+# The examples are projects of their own (examples/*/pyproject.toml), linted with this
+# configuration; their tests get the same allowances as this package's.
+"examples/*/tests/**/*.py" = ["S101", "D1", "PLR2004", "TID251"]
+# A command-line script run by path: printing is its interface, and it is not in a package.
+"skills/*/scripts/*.py" = ["T201", "INP001"]
+# Run by path to write the docs site's generated pages; not in a package.
+"scripts/*.py" = ["INP001"]
+
+[tool.ruff.per-file-target-version]
+# The migration scanner runs on the project being migrated, which 0.1 allowed on Python 3.10.
+"skills/*/scripts/*.py" = "py310"
+
+[tool.mypy]
+python_version = "3.11"
+files = ["src", "tests", "skills", "scripts"]
+# Checked against the installed wheel instead, by .github/scripts/check-consumer-types.sh.
+exclude = ["^tests/consumer/"]
+strict = true
+warn_unreachable = true
+enable_error_code = [
+    "deprecated",
+    "exhaustive-match",
+    "ignore-without-code",
+    "mutable-override",
+    "possibly-undefined",
+    "redundant-expr",
+    "redundant-self",
+    "truthy-bool",
+    "truthy-iterable",
+    "unimported-reveal",
+    "unused-awaitable",
+]
+
+[tool.uv]
+# A floor, not an exact pin: Dependabot's bundled uv must still run.
+required-version = ">=0.12.19"
+# Publish-age cooldown, matching Dependabot's 7 days.
+exclude-newer = "7 days"
+
+# Read by .github/scripts/mutation_gate.py, which runs mutmut on the lines a change edits.
+# mutmut runs the tests in a copy of the repository (mutants/); tests/test_docs.py reads
+# the README and the upgrade guide, so they are copied too. The migration skill's tests
+# test skills/, which is not mutated, so they do not run.
+[tool.mutmut]
+source_paths = ["src/permit_mcp"]
+pytest_add_cli_args_test_selection = ["tests", "--ignore=tests/test_migration_skill.py"]
+also_copy = ["CHANGELOG.md", "CODE_OF_CONDUCT.md", "README.md", "docs", "mkdocs.yml", "scripts"]

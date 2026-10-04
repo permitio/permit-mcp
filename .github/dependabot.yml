@@ -1,0 +1,124 @@
+# Weekly version updates. Every ecosystem waits 7 days after a release before
+# proposing it (uv waits 14 for a major), since a new release is when a
+# compromised upload is most likely still live. Security updates skip the wait.
+version: 2
+updates:
+  # pyproject.toml ([project].dependencies and the dev group) and uv.lock, which
+  # Dependabot re-locks in the same pull request. The ranges are published open,
+  # so a raised floor is what changes what a consumer can install; the CI audit
+  # scans the floors.
+  - package-ecosystem: "uv"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+    open-pull-requests-limit: 5
+    # Left at auto, Dependabot may treat this package as a library and widen
+    # upper bounds only, never raising a `>=` floor. increase raises the floors
+    # and moves the exact pins in the dev group.
+    versioning-strategy: increase
+    # `uv lock` still applies exclude-newer = "7 days" from pyproject.toml, so a
+    # security fix younger than that fails to lock until it is 7 days old, or
+    # until an exclude-newer-package entry admits it.
+    cooldown:
+      default-days: 7
+      semver-major-days: 14
+    groups:
+      # First, since a dependency joins the first group it matches: a new lint
+      # rule or type error, or a prek 0.x minor release that changes how hooks
+      # run, must not hold up the runtime updates.
+      lint-tools:
+        patterns: ["ruff", "mypy", "typos", "prek"]
+      # The docs site's builder; Zensical 0.0.x can change its output in any
+      # release, and the docs job fails on output it does not expect.
+      docs-tools:
+        patterns: ["zensical", "mkdocstrings", "mkdocstrings-python"]
+      # Alone: .github/scripts/mutation_gate.py relies on mutmut internals that its
+      # docstring lists, and a mutmut update is reviewed against that list.
+      mutmut:
+        patterns: ["mutmut"]
+      minor-and-patch:
+        update-types: ["minor", "patch"]
+    ignore:
+      # The uv pin in the dev group is the uv every setup-uv step in ci.yml reads
+      # from uv.lock (version-file), and the uv release.yml pins by version and
+      # checksum. The [build-system] bound on uv_build must allow it, so releases
+      # build with that uv's built-in backend. All of them move together, by
+      # hand; test_release.py fails when they disagree.
+      - dependency-name: "uv"
+      - dependency-name: "uv_build"
+    commit-message:
+      prefix: "deps"
+      prefix-development: "deps-dev"
+    labels:
+      - "dependencies"
+
+  # The food-ordering example, a uv project of its own: its exact pins in
+  # examples/food-ordering-system/pyproject.toml and its uv.lock, with the same
+  # cooldown and groups as the package. Its permit-mcp is this checkout, which
+  # Dependabot leaves alone. ruff and mypy are pinned at the root's versions;
+  # move both pins together.
+  - package-ecosystem: "uv"
+    directory: "/examples/food-ordering-system"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+    open-pull-requests-limit: 5
+    versioning-strategy: increase
+    cooldown:
+      default-days: 7
+      semver-major-days: 14
+    groups:
+      lint-tools:
+        patterns: ["ruff", "mypy"]
+      minor-and-patch:
+        update-types: ["minor", "patch"]
+    ignore:
+      # The [build-system] bound on uv_build follows the root's, moved by hand.
+      - dependency-name: "uv_build"
+    commit-message:
+      prefix: "deps"
+      prefix-development: "deps-dev"
+    labels:
+      - "dependencies"
+
+  # Hook revisions in .pre-commit-config.yaml, pinned to commits with a
+  # `# frozen: vX` comment that Dependabot rewrites with the commit. The
+  # `repo: local` hooks come from uv.lock, which the uv entry maintains. Only
+  # default-days is supported for this ecosystem.
+  - package-ecosystem: "pre-commit"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+    open-pull-requests-limit: 5
+    cooldown:
+      default-days: 7
+    groups:
+      minor-and-patch:
+        update-types: ["minor", "patch"]
+    commit-message:
+      prefix: "deps-dev"
+    labels:
+      - "dependencies"
+
+  # The actions in .github/workflows, pinned to commits with the release in a
+  # comment; Dependabot updates both. The binaries the workflows download by
+  # version and checksum (Trivy, actionlint, gitleaks, and release.yml's uv)
+  # and zizmor-action's zizmor version are updated by hand. Only default-days
+  # is supported here.
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+    open-pull-requests-limit: 5
+    cooldown:
+      default-days: 7
+    groups:
+      minor-and-patch:
+        update-types: ["minor", "patch"]
+    commit-message:
+      prefix: "deps-dev"
+    labels:
+      - "dependencies"

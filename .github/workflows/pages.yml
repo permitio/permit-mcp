@@ -1,0 +1,88 @@
+# Publishes the API reference site (mkdocs.yml) to GitHub Pages, at
+# https://permitio.github.io/permit-mcp/, so the site documents a released
+# version. CONTRIBUTING.md lists the repository settings it needs.
+name: Pages
+
+# release.yml calls this workflow once the release is on PyPI (its docs job
+# needs publish), so the site never documents a version PyPI does not have. A
+# called run has release.yml's event, ref and permissions: the release's tag,
+# and what release.yml's docs job grants, which test_workflows.py checks against
+# what the jobs here ask for. workflow_dispatch is a redeploy of a published
+# release, run on its tag. Either way the ref check below refuses anything but
+# a published, non-prerelease vMAJOR.MINOR.PATCH release, so nothing deploys
+# from main or another branch.
+#
+# It builds the site itself rather than calling ci.yml: release.yml has already
+# run ci.yml on the tag, the CI docs job runs the same build script, and what
+# the site shows depends only on that build.
+on:
+  workflow_call:
+  workflow_dispatch:
+
+permissions: {}
+
+defaults:
+  run:
+    shell: bash --noprofile --norc -euo pipefail {0}
+
+jobs:
+  # Builds with .github/scripts/build-docs.sh, which fails on any warning, as
+  # the CI docs job does. No cache: what is published is built from the tag.
+  build:
+    name: build
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: read  # the checkout, and gh release view
+      # configure-pages fails when Pages is not enabled with GitHub Actions as
+      # the source.
+      pages: read  # configure-pages reads the Pages settings
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          persist-credentials: false
+      # The ref must be a tag that is the whole string vMAJOR.MINOR.PATCH, the
+      # pattern release.yml's tag check uses, and name a published release that
+      # is not a pre-release. A draft is not visible to this job's token, so gh
+      # fails on it as on a tag with no release.
+      # The guard for a dispatch from a branch is the github-pages environment's v* rule.
+      - name: Check that the ref is a published release
+        env:
+          REF_TYPE: ${{ github.ref_type }}
+          TAG: ${{ github.ref_name }}
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: .github/scripts/release-checks.sh ref
+      - uses: actions/configure-pages@45bfe0192ca1faeb007ade9deae92b16b8254a0d  # v6.0.0
+      - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7  # v10.2.0
+        with:
+          version-file: uv.lock
+          python-version: "3.13"
+          enable-cache: false
+      - name: Build the docs site
+        run: .github/scripts/build-docs.sh
+      - uses: actions/upload-pages-artifact@fc324d3547104276b827a68afc52ff2a11cc49c9  # v5.0.0
+        with:
+          path: site/
+
+  # The only job with write access, and the only one in the github-pages
+  # environment, whose deployment rules decide which refs may deploy. No `if:`:
+  # it runs only when build succeeded. One deployment at a time: a newer run
+  # waits for the running one rather than cancelling it halfway through.
+  deploy:
+    name: deploy
+    needs: build
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      pages: write  # deploy-pages creates the Pages deployment
+      id-token: write  # deploy-pages proves to Pages which run it is (OIDC)
+    concurrency:
+      group: pages
+      cancel-in-progress: false
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@368f82528645a54fb793d4d04e342629a3f51346  # v5.0.1

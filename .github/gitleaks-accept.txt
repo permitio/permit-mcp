@@ -1,0 +1,7 @@
+# Reviewed gitleaks false positives, one per line: the finding's fingerprint
+# (commit:file:rule:line, as gitleaks prints it), then "#" and why it is not a
+# secret. A fingerprint names one commit, so an entry hides only that finding.
+# On a pull request CI reads this file from the base branch, so an entry a pull
+# request adds takes effect once it merges.
+# Never add a real secret here: rotate it.
+f9ed0182d930f4e67f4ee45627b1f00ce74258ad:tests/test_migration_skill.py:generic-api-key:448  # a UUID used as an access request ID in a scanner fixture

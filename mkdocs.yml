@@ -1,0 +1,78 @@
+# The API reference site, built with Zensical (see CONTRIBUTING.md). Kept to the
+# mkdocs.yml format so MkDocs with Material for MkDocs can build it too.
+# scripts/docs_pages.py writes docs/reference/tools.md and docs/llms.txt before
+# the build, and into site/ after it the Markdown copy of each page but the API
+# reference; it lists the pages of `nav` for llms.txt, so change both together.
+site_name: permit-mcp
+site_description: >-
+  API reference of permit-mcp, the MCP server for Permit.io access requests,
+  operation approvals and permission checks.
+site_url: https://permitio.github.io/permit-mcp/
+repo_url: https://github.com/permitio/permit-mcp
+repo_name: permitio/permit-mcp
+# The pages are generated or copied from files outside docs/, so an edit link
+# would point at the wrong file.
+edit_uri: ""
+
+theme:
+  name: material
+  # The system fonts: no request to a third-party font host.
+  font: false
+  features:
+    - navigation.sections
+    - content.code.copy
+
+nav:
+  - Overview: index.md
+  - Embedding API: reference/api.md
+  - Tools: reference/tools.md
+  - Upgrading to 1.0: upgrade-to-1.0.md
+
+# Every problem MkDocs can report about a link is a warning, which fails the build.
+# Zensical reads only `links.not_found` and `links.anchors`; check_site.py checks
+# the nav and absolute links in the built site instead.
+validation:
+  nav:
+    omitted_files: warn
+    not_found: warn
+    absolute_links: warn
+  links:
+    not_found: warn
+    anchors: warn
+    absolute_links: warn
+    unrecognized_links: warn
+
+markdown_extensions:
+  - admonition
+  - attr_list
+  - toc:
+      permalink: true
+  - pymdownx.highlight
+  - pymdownx.superfences
+  - pymdownx.snippets:
+      # docs/index.md includes README.md, which lives at the repository root.
+      base_path: ["."]
+      check_paths: true
+
+plugins:
+  - search
+  - mkdocstrings:
+      handlers:
+        python:
+          paths: [src]
+          options:
+            docstring_style: google
+            docstring_options:
+              # A Returns section here describes one value, over as many lines as it needs.
+              returns_multiple_items: false
+            merge_init_into_class: true
+            show_source: false
+            show_root_heading: true
+            show_root_full_path: false
+            show_signature_annotations: true
+            signature_crossrefs: true
+            separate_signature: true
+            show_symbol_type_heading: true
+            members_order: source
+            filters: ["!^_"]
+            heading_level: 2

@@ -1,0 +1,34 @@
+"""Family food ordering: the MCP server that the chat backend starts."""
+
+import os
+
+from mcp.server.fastmcp import FastMCP
+from mcp.server.fastmcp.exceptions import ToolError
+from permit_mcp import PermitServer
+
+TENANT = os.getenv("TENANT", "default")
+RESTAURANTS = os.environ["RESOURCE_KEY"]
+
+mcp = FastMCP("family_food_ordering")
+permit_server = PermitServer(
+    mcp,
+    exclude_tools=["approve_access_request", "deny_access_request"],
+)
+
+
+@mcp.tool()
+async def list_dishes(user_id: str, restaurant_id: str) -> list[str]:
+    """List the dishes of a restaurant.
+
+    Args:
+        user_id: The ID of the user.
+        restaurant_id: The key of the restaurant.
+    """
+    if not restaurant_id:
+        raise ToolError("restaurant_id is required")
+    query = "SELECT name FROM dishes WHERE restaurant_id = ? AND user_id = ?"
+    return [query, user_id]
+
+
+if __name__ == "__main__":
+    mcp.run(transport="stdio")

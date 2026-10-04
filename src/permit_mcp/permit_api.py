@@ -1,0 +1,697 @@
+"""The Permit API and PDP calls the tools make. The only module that sends HTTP requests.
+
+The access-request and operation-approval calls both act with the permissions of the acting
+user. The access-request calls other than cancel name that user in the request path, and
+Permit applies the user's Elements permissions: a reviewer must be allowed to review, and
+nobody approves their own request. Cancelling an access request and the operation-approval
+calls first log in to Elements as that user and send the Elements token the login returns.
+Listing resource instances uses the server's API key. The permission check asks the PDP about
+the acting user, and authenticates to the PDP with the server's API key.
+"""
+
+import asyncio
+import http
+import json
+import urllib.parse
+import urllib.request
+import weakref
+from collections.abc import Iterable, Mapping
+from typing import Any, Literal, TypeVar
+from uuid import UUID
+
+import aiohttp
+
+from permit_mcp._log import redact_recent, scrub
+from permit_mcp.config import DEFAULT_PDP_URL, ENV_VARS, Settings
+
+MAX_ERROR_BODY = 2000
+REQUEST_TIMEOUT_SECONDS = 30
+
+Decision = Literal["approve", "deny"]
+ElementSetting = Literal["access_request_element", "operation_approval_element"]
+_T = TypeVar("_T")
+
+_API = "Permit API"
+_PDP = "PDP"
+
+# Put before the PDP's own answer in the error of a check the PDP answered with 404.
+_PDP_NOT_FOUND_HINT = (
+    f"The URL in {ENV_VARS['pdp_url']} does not answer permission checks. Set it to a "
+    f"Permit PDP: the cloud PDP ({DEFAULT_PDP_URL}) or a container PDP. "
+    "The Permit API is not a PDP."
+)
+
+
+class PermitApiError(Exception):
+    """A Permit API or PDP call failed, or was refused before it was sent.
+
+    Attributes:
+        operation: What the call was for, such as "approve access request".
+        status: The HTTP status of the response, or None when there was no usable HTTP
+            answer (the API was unreachable or timed out, the answer was a failed Elements
+            login, or the call was refused before it was sent).
+        body: The response body, or an explanation when there is none, with every
+            registered secret redacted, then cut to 2000 characters.
+        service: Who was called: "Permit API" or "PDP".
+
+    """
+
+    def __init__(
+        self, operation: str, status: int | None, body: str, *, service: str = _API
+    ) -> None:
+        """Build the error; `body` is redacted, then truncated, here.
+
+        Args:
+            operation: What the call was for.
+            status: The HTTP status, or None.
+            body: The response body or an explanation.
+            service: Who was called, named at the start of the message.
+
+        """
+        self.operation = operation
+        self.status = status
+        self.service = service
+        # Redacted before it is cut, so a secret that straddles the cut cannot leak in part.
+        self.body = scrub(body)[:MAX_ERROR_BODY]
+        if status is None:
+            message = f"{service} call to {operation} failed: {self.body}"
+        else:
+            message = f"{service} call to {operation} returned HTTP {status}: {self.body}"
+        super().__init__(message)
+
+
+class PermitApi:
+    """Calls the Permit API for one server, through one HTTP session.
+
+    One instance belongs to one event loop: the first call opens the session on the running
+    loop, and every later call must run on that loop. `aclose()` closes the session, and a
+    call made after it opens a new one. When an instance with an open session is garbage
+    collected, or still exists at interpreter exit, and `aclose()` was not called, a
+    finalizer closes the session's connections without the event loop
+    (`_close_unawaited`). Like the loop it belongs to, an instance is not carried across
+    `fork()`. Cookies are never stored, so nothing one call receives is sent by another.
+    Redirects are not followed. Proxies come from the environment (HTTP_PROXY, HTTPS_PROXY
+    and NO_PROXY, or the system settings), and a netrc file is never read. The project and
+    environment of the API key are asked for once and kept.
+    """
+
+    def __init__(self, settings: Settings) -> None:
+        """Prepare the calls; no request is sent until the first call.
+
+        Args:
+            settings: The validated server settings.
+
+        """
+        self._settings = settings
+        self._session: aiohttp.ClientSession | None = None
+        self._finalizer: weakref.finalize[[aiohttp.ClientSession], PermitApi] | None = None
+        self._scope_lock = asyncio.Lock()
+        self._scope: tuple[str, str] | None = None
+
+    async def aclose(self) -> None:
+        """Close the HTTP session. Calling it again, or before any call, does nothing.
+
+        A later call opens a new session. After it, garbage collection of this instance
+        closes nothing.
+        """
+        session, self._session = self._session, None
+        self._detach_finalizer()
+        if session is not None and not session.closed:
+            await session.close()
+
+    async def list_resource_instances(self, *, page: int, per_page: int) -> object:
+        """List the instances of the configured resource type in the configured tenant.
+
+        The listing uses the server's API key: it is not filtered by any user's permissions.
+
+        Args:
+            page: Page number, from 1.
+            per_page: Results per page.
+
+        Returns:
+            The API's JSON as returned.
+
+        """
+        return await self._call(
+            "list resource instances",
+            "GET",
+            await self._environment_url("facts", "resource_instances"),
+            params={
+                "tenant": self._settings.tenant,
+                "resource": self._settings.resource,
+                "page": page,
+                "per_page": per_page,
+            },
+        )
+
+    async def create_access_request(
+        self, user: str, *, role: str, reason: str, resource_instance: str | None
+    ) -> object:
+        """File an access request for `user` for `role` on the configured resource.
+
+        Args:
+            user: Key of the acting user, who requests the access.
+            role: Key of the requested role.
+            reason: Why the access is needed.
+            resource_instance: Key or ID of one resource instance, or None for the type.
+
+        Returns:
+            The created access request, as the API returns it.
+
+        """
+        details = {
+            "tenant": self._settings.tenant,
+            "resource": self._settings.resource,
+            "role": role,
+        }
+        if resource_instance is not None:
+            details["resource_instance"] = resource_instance
+        return await self._call(
+            "create access request",
+            "POST",
+            await self._access_requests_url(user),
+            json_body={"access_request_details": details, "reason": reason},
+        )
+
+    async def list_access_requests(  # noqa: PLR0913 - keyword-only, one per API filter
+        self,
+        user: str,
+        *,
+        status: str | None,
+        role: str | None,
+        resource_instance: str | None,
+        page: int,
+        per_page: int,
+    ) -> object:
+        """List the access requests of the configured element that `user` may see.
+
+        The element scopes the listing, so no resource filter is sent. Permit compares that
+        filter with what it stores for each request, and for an RBAC element the two never
+        match, so the listing would be empty.
+
+        Args:
+            user: Key of the acting user.
+            status: Only requests with this status, or None for all.
+            role: Only requests for this role key, or None for all.
+            resource_instance: Only requests on this resource instance, or None for all.
+            page: Page number, from 1.
+            per_page: Results per page.
+
+        Returns:
+            The API's paginated JSON as returned.
+
+        """
+        query: dict[str, str | int | None] = {
+            "status": status,
+            "role": role,
+            "resource_instance_id": resource_instance,
+            "page": page,
+            "per_page": per_page,
+        }
+        return await self._call(
+            "list access requests",
+            "GET",
+            await self._access_requests_url(user),
+            params=_without_none(query),
+        )
+
+    async def decide_access_request(
+        self,
+        user: str,
+        access_request_id: UUID,
+        *,
+        decision: Decision,
+        reviewer_comment: str | None,
+    ) -> object:
+        """Approve or deny an access request as `user`; approving grants the requested role.
+
+        Args:
+            user: Key of the acting user, who reviews the request.
+            access_request_id: ID of the access request.
+            decision: "approve" or "deny".
+            reviewer_comment: A comment stored with the decision, or None.
+
+        Returns:
+            The updated access request as the API returns it, or None for an empty body.
+
+        """
+        return await self._call(
+            f"{decision} access request",
+            "PUT",
+            await self._access_requests_url(user, str(access_request_id), decision),
+            json_body=_without_none({"reviewer_comment": reviewer_comment}),
+        )
+
+    async def cancel_access_request(self, user: str, access_request_id: UUID) -> object:
+        """Cancel an access request as `user`, with an Elements login of that user.
+
+        Withdraws a pending request the acting user filed; Permit refuses otherwise.
+
+        Args:
+            user: Key of the acting user, who filed the request.
+            access_request_id: ID of the access request.
+
+        Returns:
+            The canceled access request as the API returns it, or None for an empty body.
+
+        """
+        url = await self._elements_config_url(
+            "access_request_element", "access_requests", str(access_request_id), "cancel"
+        )
+        return await self._elements_call(user, "cancel access request", "PUT", url)
+
+    async def create_operation_approval(
+        self, user: str, *, reason: str, resource_instance: str | None
+    ) -> object:
+        """File an operation approval request as `user` on the configured resource.
+
+        Args:
+            user: Key of the acting user, who requests the approval.
+            reason: Why the operation is needed.
+            resource_instance: Key or ID of one resource instance, or None for the type.
+
+        Returns:
+            The created operation approval, as the API returns it.
+
+        """
+        details = {"tenant": self._settings.tenant, "resource": self._settings.resource}
+        if resource_instance is not None:
+            details["resource_instance"] = resource_instance
+        return await self._elements_call(
+            user,
+            "create operation approval",
+            "POST",
+            await self._elements_config_url("operation_approval_element", "operation_approval"),
+            json_body={"access_request_details": details, "reason": reason},
+        )
+
+    async def list_operation_approvals(
+        self,
+        user: str,
+        *,
+        status: str | None,
+        resource_instance: str | None,
+        page: int,
+        per_page: int,
+    ) -> object:
+        """List the operation approvals of the configured element that `user` may see.
+
+        Permit's operation-approval listing is not scoped by the element in its path, so the
+        server's resource scopes it.
+
+        Args:
+            user: Key of the acting user.
+            status: Only approvals with this status, or None for all.
+            resource_instance: Only approvals on this resource instance, or None for all.
+            page: Page number, from 1.
+            per_page: Results per page.
+
+        Returns:
+            The API's paginated JSON as returned.
+
+        """
+        query: dict[str, str | int | None] = {
+            "resource": self._settings.resource,
+            "status": status,
+            "resource_instance": resource_instance,
+            "page": page,
+            "per_page": per_page,
+        }
+        return await self._elements_call(
+            user,
+            "list operation approvals",
+            "GET",
+            await self._elements_config_url("operation_approval_element", "operation_approval"),
+            params=_without_none(query),
+        )
+
+    async def decide_operation_approval(
+        self,
+        user: str,
+        operation_approval_id: UUID,
+        *,
+        decision: Decision,
+        reviewer_comment: str | None,
+    ) -> object:
+        """Approve or deny an operation approval request as `user`.
+
+        Args:
+            user: Key of the acting user, who reviews the request.
+            operation_approval_id: ID of the operation approval.
+            decision: "approve" or "deny".
+            reviewer_comment: A comment stored with the decision, or None.
+
+        Returns:
+            The updated operation approval as the API returns it, or None for an empty body.
+
+        """
+        return await self._elements_call(
+            user,
+            f"{decision} operation approval",
+            "PUT",
+            await self._elements_config_url(
+                "operation_approval_element",
+                "operation_approval",
+                str(operation_approval_id),
+                decision,
+            ),
+            json_body=_without_none({"reviewer_comment": reviewer_comment}),
+        )
+
+    async def cancel_operation_approval(self, user: str, operation_approval_id: UUID) -> object:
+        """Cancel an operation approval request as `user`.
+
+        Withdraws a pending request the acting user filed; Permit refuses otherwise.
+
+        Args:
+            user: Key of the acting user, who filed the request.
+            operation_approval_id: ID of the operation approval.
+
+        Returns:
+            The canceled operation approval as the API returns it, or None for an empty body.
+
+        """
+        return await self._elements_call(
+            user,
+            "cancel operation approval",
+            "PUT",
+            await self._elements_config_url(
+                "operation_approval_element",
+                "operation_approval",
+                str(operation_approval_id),
+                "cancel",
+            ),
+        )
+
+    async def check_permission(
+        self, user: str, *, action: str, resource_instance: str | None
+    ) -> bool:
+        """Ask the PDP whether `user` may perform `action` on the configured resource.
+
+        The check is in the configured tenant, on the resource type or on one instance of
+        it, with an empty context. It is sent to `pdp_url` with the server's API key.
+
+        Args:
+            user: Key of the acting user.
+            action: Key of the action, such as "read".
+            resource_instance: Key of one resource instance, or None for the type.
+
+        Returns:
+            The PDP's decision.
+
+        Raises:
+            PermitApiError: The PDP failed, or answered without a boolean "allow". The error
+                of a 404 answer starts with which PDP to set.
+
+        """
+        operation = "check permission"
+        resource = {"type": self._settings.resource, "tenant": self._settings.tenant}
+        if resource_instance is not None:
+            resource["key"] = resource_instance
+        body = {"user": {"key": user}, "action": action, "resource": resource, "context": {}}
+        url = f"{self._settings.pdp_url}/allowed"
+        try:
+            decision = await self._call(operation, "POST", url, json_body=body, service=_PDP)
+        except PermitApiError as exc:
+            if exc.status != http.HTTPStatus.NOT_FOUND:
+                raise
+            raise PermitApiError(
+                operation,
+                exc.status,
+                f"{_PDP_NOT_FOUND_HINT} The PDP answered: {exc.body}",
+                service=_PDP,
+            ) from exc
+        allow = decision.get("allow") if isinstance(decision, dict) else None
+        if not isinstance(allow, bool):
+            raise PermitApiError(
+                operation, None, "the PDP answered without a boolean allow", service=_PDP
+            )
+        return allow
+
+    async def _key_scope(self) -> tuple[str, str]:
+        """Return the project and environment IDs of the API key, asked for once."""
+        if self._scope is not None:
+            return self._scope
+        async with self._scope_lock:
+            if self._scope is None:
+                self._scope = await self._fetch_key_scope()
+            return self._scope
+
+    async def _fetch_key_scope(self) -> tuple[str, str]:
+        operation = "resolve the API key's environment"
+        scope = await self._call(operation, "GET", self._url("v2", "api-key", "scope"))
+        if not isinstance(scope, dict):
+            raise PermitApiError(operation, None, "the response is not a JSON object")
+        project, environment = scope.get("project_id"), scope.get("environment_id")
+        if not (isinstance(project, str) and project):
+            level = "an organization"
+        elif not (isinstance(environment, str) and environment):
+            level = "a project"
+        else:
+            return project, environment
+        raise PermitApiError(
+            operation,
+            None,
+            f"{ENV_VARS['api_key']} is {level}-level API key; this server needs an "
+            "environment-level API key.",
+        )
+
+    async def _access_requests_url(self, user: str, *extra: str) -> str:
+        element = _element(self._settings.access_request_element, "access_request_element")
+        return await self._environment_url(
+            "facts", "access_requests", element, "user", user,
+            "tenant", self._settings.tenant, *extra,
+        )  # fmt: skip
+
+    async def _elements_config_url(
+        self, setting: ElementSetting, collection: str, *extra: str
+    ) -> str:
+        """Return the URL of `collection` in the Elements config that `setting` names."""
+        element = _element(getattr(self._settings, setting), setting)
+        return await self._environment_url("elements", "config", element, collection, *extra)
+
+    async def _environment_url(self, api: str, *segments: str) -> str:
+        """Return the URL of `segments` under `api`, in the API key's project and environment.
+
+        The segments are checked before the project and environment are looked up, so a
+        refused segment fails before any request is sent.
+        """
+        _check_segments(segments)
+        project, environment = await self._key_scope()
+        return self._url("v2", api, project, environment, *segments)
+
+    def _url(self, *segments: str) -> str:
+        """Return the API URL of the path of `segments`, each escaped as one path segment."""
+        _check_segments(segments)
+        path = "/".join(urllib.parse.quote(segment, safe="") for segment in segments)
+        return f"{self._settings.api_url}/{path}"
+
+    async def _elements_call(  # noqa: PLR0913 - the request parts are keyword-only
+        self,
+        user: str,
+        operation: str,
+        method: str,
+        url: str,
+        *,
+        params: Mapping[str, str | int] | None = None,
+        json_body: Mapping[str, Any] | None = None,
+    ) -> object:
+        """Log in to Elements as `user`, then make the call with that login's token.
+
+        The token is fetched for this call alone, never shared between calls or users,
+        and is redacted from logs and errors from the moment it arrives.
+        """
+        token = await self._elements_token(user)
+        return await self._call(
+            operation, method, url, token=token, params=params, json_body=json_body
+        )
+
+    async def _elements_token(self, user: str) -> str:
+        """Return the Elements token from elements_login_as, for `user` in the tenant."""
+        operation = "log in to Elements as the acting user"
+        login = await self._call(
+            operation,
+            "POST",
+            self._url("v2", "auth", "elements_login_as"),
+            json_body={"user_id": user, "tenant_id": self._settings.tenant},
+        )
+        if not isinstance(login, dict):
+            raise PermitApiError(operation, None, "the response is not a JSON object")
+        token = login.get("element_bearer_token")
+        error = login.get("error")
+        if error or not isinstance(token, str) or not token:
+            # A failed login comes back as HTTP 200 with the reason in "error".
+            reason = error or "the response has no Elements token"
+            code = login.get("error_code")
+            detail = f" (error code {code})" if code is not None else ""
+            raise PermitApiError(operation, None, f"{reason}{detail}")
+        redact_recent(token)
+        return token
+
+    async def _call(  # noqa: PLR0913 - the request parts are keyword-only
+        self,
+        operation: str,
+        method: str,
+        url: str,
+        *,
+        token: str | None = None,
+        params: Mapping[str, str | int] | None = None,
+        json_body: Mapping[str, Any] | None = None,
+        service: str = _API,
+    ) -> object:
+        """Send one request and return its JSON, or None when the body is empty.
+
+        Args:
+            operation: What the call is for, used in errors.
+            method: The HTTP method.
+            url: The full URL.
+            token: The Bearer token; the API key when None.
+            params: Query parameters.
+            json_body: The JSON body; none when None.
+            service: Who is called, used in errors: "Permit API" or "PDP".
+
+        Raises:
+            PermitApiError: The service was unreachable or timed out, answered with a status
+                outside 2xx (a redirect included), or answered with a body that is not JSON.
+
+        """
+        headers = {"Authorization": f"Bearer {token or self._settings.api_key}"}
+        host = _host_of(url)
+        try:
+            proxy = await asyncio.to_thread(_proxy_for, url)
+            async with self._current_session().request(
+                method,
+                url,
+                headers=headers,
+                params=params,
+                json=json_body,
+                proxy=proxy,
+                allow_redirects=False,
+            ) as response:
+                status = response.status
+                raw = await response.read()
+        except TimeoutError as exc:
+            raise PermitApiError(
+                operation,
+                None,
+                f"no response from {host} within {REQUEST_TIMEOUT_SECONDS} seconds",
+                service=service,
+            ) from exc
+        except aiohttp.ClientError as exc:
+            raise PermitApiError(
+                operation,
+                None,
+                f"could not reach {host}: {type(exc).__name__}: {exc}",
+                service=service,
+            ) from exc
+        text = raw.decode("utf-8", errors="replace")
+        if not http.HTTPStatus.OK <= status < http.HTTPStatus.MULTIPLE_CHOICES:
+            raise PermitApiError(operation, status, text, service=service)
+        if not text.strip():
+            return None
+        try:
+            return json.loads(text)
+        except json.JSONDecodeError as exc:
+            raise PermitApiError(
+                operation, status, f"the response is not JSON: {text}", service=service
+            ) from exc
+
+    def _current_session(self) -> aiohttp.ClientSession:
+        """Return the HTTP session, opened on first use."""
+        if self._session is None or self._session.closed:
+            self._detach_finalizer()
+            self._session = aiohttp.ClientSession(
+                timeout=aiohttp.ClientTimeout(total=REQUEST_TIMEOUT_SECONDS),
+                cookie_jar=aiohttp.DummyCookieJar(),
+                # Proxies are chosen per request by _proxy_for; this also keeps netrc unread,
+                # whose credentials would clash with the Authorization header.
+                trust_env=False,
+            )
+            # Holds the session, not this instance, so it does not keep the instance alive.
+            self._finalizer = weakref.finalize(self, _close_unawaited, self._session)
+        return self._session
+
+    def _detach_finalizer(self) -> None:
+        if self._finalizer is not None:
+            self._finalizer.detach()
+            self._finalizer = None
+
+
+def _close_unawaited(session: aiohttp.ClientSession) -> None:
+    """Close `session` without its event loop: a PermitApi was dropped without `aclose()`.
+
+    aiohttp 3.14 has no public synchronous close: `ClientSession.close()` is a coroutine,
+    and `BaseConnector.close()` schedules a task on the loop and warns when it is not
+    awaited. `BaseConnector._close()` is what aiohttp's own `BaseConnector.__del__` calls
+    at garbage collection: it cancels the connector's pending DNS lookups and cleanup
+    handles, and closes every pooled and acquired connection's transport, without
+    awaiting anything, and it does nothing on a connector already closed. A closed
+    connector is a closed session, so neither the session nor the connector then warns
+    that it was left unclosed. When the loop is already closed, `_close()` only marks the
+    connector closed: asyncio cannot close a transport without its loop, and reports each
+    one it left open when it is collected. Like aiohttp's `__del__`, it runs in whichever
+    thread collects the instance.
+    """
+    connector = session.connector
+    if connector is not None:
+        # The synchronous close aiohttp's own __del__ uses; there is no public one.
+        connector._close()  # noqa: SLF001
+
+
+def _element(value: str | None, setting: str) -> str:
+    """Return the configured element `value` of `setting`.
+
+    The tools of an element are registered only when it is set, so this fails only for a
+    direct call that bypasses them.
+
+    Raises:
+        PermitApiError: The element is not set.
+
+    """
+    if value is None:
+        operation = f"use the {setting.replace('_', ' ')}"
+        raise PermitApiError(operation, None, f"{ENV_VARS[setting]} is not set.")
+    return value
+
+
+def _check_segments(segments: Iterable[str]) -> None:
+    r"""Refuse a path segment that would change the path even when escaped.
+
+    Raises:
+        PermitApiError: A segment is empty, "." or "..", or contains "/" or "\".
+
+    """
+    operation = "build the request path"
+    for segment in segments:
+        if segment in {"", ".", ".."} or "/" in segment or "\\" in segment:
+            raise PermitApiError(
+                operation,
+                None,
+                f"{segment!r} cannot be used as an ID or key in a request path (empty, '.', "
+                "'..', and values containing '/' or '\\' are refused); nothing was sent.",
+            )
+
+
+def _host_of(url: str) -> str:
+    """Return the host of `url` and its port, if it has one, for error messages."""
+    parts = urllib.parse.urlsplit(url)
+    host = parts.hostname or ""
+    if ":" in host:
+        host = f"[{host}]"
+    return f"{host}:{parts.port}" if parts.port is not None else host
+
+
+def _proxy_for(url: str) -> str | None:
+    """Return the proxy the environment or system settings name for `url`, or None.
+
+    It blocks: on some systems the bypass check resolves host names.
+    """
+    parts = urllib.parse.urlsplit(url)
+    proxy = urllib.request.getproxies().get(parts.scheme)
+    if proxy is None or (parts.hostname and urllib.request.proxy_bypass(parts.hostname)):
+        return None
+    return proxy
+
+
+def _without_none(values: Mapping[str, _T | None]) -> dict[str, _T]:
+    return {key: value for key, value in values.items() if value is not None}

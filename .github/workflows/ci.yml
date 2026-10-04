@@ -1,0 +1,811 @@
+# Every check this repository runs. The `ci` job at the end, named CI, is the one
+# check to require: it fails unless every other job succeeded.
+name: CI
+
+# Pull requests into any branch, so a stacked pull request is checked before it
+# merges, and with no path filter, since a required check that never starts
+# blocks the pull request. Pushes to main, so a regression shows on main. Weekly,
+# since advisories are published against versions that already shipped; notify
+# posts that run's result to Slack. release.yml calls this one and publishes
+# only when CI passes. A called run has the caller's event, permissions and
+# github.workflow: every job here needs at most `contents: read`, so the caller's
+# job must grant that, and GitHub refuses the whole run if it grants less. The
+# live-spec drift check and notify run only when github.workflow is CI, so a
+# release's dry run (a workflow_dispatch of Release) runs neither.
+on:
+  pull_request:
+  push:
+    branches: [main]
+  schedule:
+    - cron: "0 9 * * 1"  # Mondays 09:00 UTC
+  workflow_dispatch:
+  workflow_call:
+    inputs:
+      # The release gates on the runtime trees only: an advisory in a dev, docs
+      # or release tool, or in the example, never reaches a user, so it must not
+      # hold up a release. Every other run gates on those trees too.
+      gate-dev-tree:
+        description: Fail the audit on an advisory in the dev, docs, release and example trees too
+        type: boolean
+        default: true
+
+permissions: {}
+
+# -u on top of GitHub's bash flags: an unset variable is an error, not "".
+defaults:
+  run:
+    shell: bash --noprofile --norc -euo pipefail {0}
+
+# The stdlib scripts in .github/scripts run as
+# `uv run --no-project --python 3.11 python`: the requires-python floor, from the
+# uv that uv.lock pins, whatever Python the runner or the job has.
+env:
+  # Where audit-deps.sh writes the trees and their Trivy reports, and the trees,
+  # in the order audit-deps.sh compiles them.
+  AUDIT_DIR: /tmp/audit
+  AUDIT_TREES: runtime-ceiling runtime-floor dev-ceiling docs-ceiling release-ceiling example-ceiling
+  # Binaries that are downloaded and checked against the line of each release's
+  # checksums file for the runner's platform (fetch-binary.sh). Dependabot does
+  # not update these; actionlint's version matches the prek hook's.
+  ACTIONLINT_URL: https://github.com/rhysd/actionlint/releases/download/v1.7.12/actionlint_1.7.12_linux_amd64.tar.gz
+  ACTIONLINT_SHA256: 8aca8db96f1b94770f1b0d72b6dddcb1ebb8123cb3712530b08cc387b349a3d8
+  GITLEAKS_URL: https://github.com/gitleaks/gitleaks/releases/download/v8.30.1/gitleaks_8.30.1_linux_x64.tar.gz
+  GITLEAKS_SHA256: 551f6fc83ea457d62a0d98237cbad105af8d557003051f41f3e7ca7b3f2470eb
+  TRIVY_URL: https://github.com/aquasecurity/trivy/releases/download/v0.74.0/trivy_0.74.0_Linux-64bit.tar.gz
+  TRIVY_SHA256: 2ae6fe3ee734b7fdf11335663e18c75ea12dccc76062f09f164a3b0f8be4371a
+
+# Concurrency is set per job, in a group per ref. On a pull request a new push
+# cancels the older run's job. On a push to main the newer run's job waits for
+# the running one; GitHub keeps one waiting job per group and cancels any older
+# waiting one, so with three quick merges the middle run's jobs are cancelled and
+# its CI fails, while the newest run reports. Scheduled and manual runs get a
+# group of their own (the run id), so nothing cancels them or makes them wait.
+jobs:
+  # Runs every hook in .pre-commit-config.yaml on every file. prek, and the ruff,
+  # mypy and typos the hooks run, come from uv.lock, so CI runs the versions
+  # developers run and Dependabot moves them. No cache: the release workflow
+  # calls this one, and nothing restored from an earlier run may decide a gate.
+  prek:
+    name: prek
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    permissions:
+      contents: read
+    concurrency:
+      group: >-
+        ${{ github.workflow }}-${{ github.ref }}-prek-${{
+        (github.event_name == 'schedule' || github.event_name == 'workflow_dispatch')
+        && github.run_id || 'shared' }}
+      cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          persist-credentials: false
+      # CI gates only the jobs in its needs, so every other job but notify, which
+      # reports CI's result, must be listed there, once; ADVISORY_JOBS may name
+      # only jobs CI needs, and EXPECTED_JOBS must be their number.
+      - name: Check that CI needs every job
+        run: .github/scripts/ci-steps.sh needs
+      # The uv that uv.lock pins. The project environment and the hooks'
+      # environments are built on the requires-python floor.
+      - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7  # v10.2.0
+        with:
+          version-file: uv.lock
+          python-version: "3.11"
+          enable-cache: false
+      # Change EXPECTED_HOOKS when a hook is added or removed.
+      - name: Run hooks
+        env:
+          EXPECTED_HOOKS: 21
+        run: .github/scripts/ci-steps.sh hooks
+
+  # The offline suite on every supported Python, installed the way a consumer
+  # installs: from the ranges in pyproject.toml, not uv.lock, at the newest
+  # versions they allow (highest) and at their floors (lowest-direct). The
+  # locked leg runs what developers run, and reports the API coverage of the
+  # requests its tests sent.
+  tests:
+    name: tests (Python ${{ matrix.python }}, ${{ matrix.resolution }})
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    permissions:
+      contents: read
+    concurrency:
+      group: >-
+        ${{ github.workflow }}-${{ github.ref }}-tests-${{ matrix.python }}-${{
+        matrix.resolution }}-${{
+        (github.event_name == 'schedule' || github.event_name == 'workflow_dispatch')
+        && github.run_id || 'shared' }}
+      cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+    strategy:
+      fail-fast: false
+      matrix:
+        python: ["3.11", "3.12", "3.13", "3.14"]
+        resolution: [lowest-direct, highest]
+        include:
+          - python: "3.13"
+            resolution: locked
+    steps:
+      # Depth 2: on a pull request, HEAD is the merge commit and HEAD^1 the base it
+      # was merged into, which the surface report compares with.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          fetch-depth: 2
+          persist-credentials: false
+      # activate-environment creates .venv on the leg's Python and puts it on
+      # PATH, so `uv pip` installs into it and `python` runs from it. No cache:
+      # each leg resolves a different set.
+      - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7  # v10.2.0
+        with:
+          version-file: uv.lock
+          python-version: ${{ matrix.python }}
+          activate-environment: true
+          enable-cache: false
+      # Resolves the runtime dependencies alone, as a consumer does, checks a
+      # lowest-direct resolution is at the floors, installs the package and the
+      # dev group under it, and checks what was installed (ci-steps.sh).
+      - name: Install from the ranges in pyproject.toml
+        if: matrix.resolution != 'locked'
+        env:
+          RESOLUTION: ${{ matrix.resolution }}
+        run: .github/scripts/ci-steps.sh install
+      - name: Install from uv.lock
+        if: matrix.resolution == 'locked'
+        run: uv sync --locked
+      - name: Show installed packages
+        run: uv pip list
+      - name: Import the package with warnings as errors
+        run: python -W error -c "import permit_mcp"
+      # On the locked leg, tests/api_record.py writes the method, origin, path,
+      # status and test id of each request the tests send to PERMIT_MCP_API_RECORD,
+      # and the origins of the mock servers beside it, for the API coverage report.
+      # The other legs leave it empty and record nothing.
+      - name: Offline tests
+        env:
+          PERMIT_MCP_API_RECORD: >-
+            ${{ matrix.resolution == 'locked' && format('{0}/api-record.jsonl', runner.temp) || '' }}
+        run: python -m pytest -q -W error --junitxml="$RUNNER_TEMP/junit.xml"
+      # A skipped test passes pytest, and so does a run that collects nothing.
+      # Exits 1 when a test skipped, and 2 when no test ran.
+      - name: Check that every test ran
+        run: >-
+          uv run --no-project --python 3.11 python .github/scripts/check_junit.py
+          "$RUNNER_TEMP/junit.xml"
+      # Which in-scope Permit API and PDP operations the tests sent, and why each
+      # other one is untested or missing; the report goes to the job summary.
+      # CI's own weekly and manual runs first write the live control-plane spec's
+      # in-scope inventory, and any in-scope operation added, removed or changed
+      # since the committed one is a finding. Other runs, and every run
+      # release.yml calls, read only the committed inventory, so a pull
+      # request's or a release's result depends on its commit alone.
+      - name: Report API coverage
+        if: matrix.resolution == 'locked'
+        env:
+          EVENT: ${{ github.event_name }}
+          WORKFLOW: ${{ github.workflow }}
+        run: .github/scripts/ci-steps.sh coverage
+      # The live inventory, to commit when the drift is expected (CONTRIBUTING.md).
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
+        if: >-
+          ${{ !cancelled() && matrix.resolution == 'locked' && github.workflow == 'CI' &&
+          (github.event_name == 'schedule' || github.event_name == 'workflow_dispatch') }}
+        with:
+          name: control-plane-spec
+          path: ${{ runner.temp }}/api-specs/
+          retention-days: 30
+          if-no-files-found: warn
+      # Lists the changes a pull request makes to tests/snapshots/surface.json (the
+      # tools as clients list them, and the public API), each labelled BREAKING or
+      # non-breaking, in the job summary. The tests above already proved the snapshot
+      # matches the code. It compares with HEAD^1, the merge commit's first parent:
+      # the base this run merged, not the base branch's tip, which may have moved on.
+      # Breaking changes are expected while 1.0 is prepared, so they are a warning,
+      # not a failure; snapshots that cannot be compared fail the step.
+      - name: Report tool surface changes
+        if: matrix.resolution == 'locked' && github.event_name == 'pull_request'
+        env:
+          BASE_REF: ${{ github.base_ref }}
+        run: .github/scripts/ci-steps.sh surface
+
+  # Builds the wheel and sdist as a release does, checks what they hold with the
+  # script the release workflow runs on what it publishes, and runs the console
+  # script from the wheel installed in a fresh environment: with no
+  # configuration it must exit 2, a configuration error. Then type-checks a
+  # host's use of the public API (tests/consumer/consumer.py) against the
+  # installed wheel with the locked mypy (check-consumer-types.sh).
+  package:
+    name: package
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    concurrency:
+      group: >-
+        ${{ github.workflow }}-${{ github.ref }}-package-${{
+        (github.event_name == 'schedule' || github.event_name == 'workflow_dispatch')
+        && github.run_id || 'shared' }}
+      cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7  # v10.2.0
+        with:
+          version-file: uv.lock
+          python-version: "3.13"
+          enable-cache: false
+      - name: Build
+        run: uv build --no-sources --out-dir "$RUNNER_TEMP/dist"
+      - name: Check the wheel and sdist
+        run: >-
+          uv run --no-project --python 3.11 python .github/scripts/check_dist.py
+          "$RUNNER_TEMP/dist" pyproject.toml
+      - name: Run the console script from the installed wheel
+        run: .github/scripts/ci-steps.sh smoke "$RUNNER_TEMP/dist"
+      - name: Type-check the public API as a consumer
+        run: >-
+          uv run --locked --only-dev .github/scripts/check-consumer-types.sh
+          "$RUNNER_TEMP/dist"
+
+  # Builds the API reference site as the Pages workflow does, with
+  # build-docs.sh. It fails on any warning (a docstring Griffe cannot parse, an
+  # unresolved cross-reference, a broken link or anchor) and on what Zensical
+  # does not report, which check_site.py checks in what was built: a nav page
+  # not built, a page left out of nav, a link from the host's root, a missing
+  # snippet include. Nothing is uploaded; release.yml publishes the site, through
+  # pages.yml, once a release is on PyPI. Its concurrency is every job's.
+  docs:
+    name: docs
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    concurrency:
+      group: >-
+        ${{ github.workflow }}-${{ github.ref }}-docs-${{
+        (github.event_name == 'schedule' || github.event_name == 'workflow_dispatch')
+        && github.run_id || 'shared' }}
+      cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7  # v10.2.0
+        with:
+          version-file: uv.lock
+          python-version: "3.13"
+          enable-cache: false
+      - name: Build the docs site
+        run: .github/scripts/build-docs.sh
+
+  # The food-ordering example (examples/food-ordering-system), a uv project of
+  # its own with its own uv.lock, which installs this checkout's permit-mcp:
+  # ruff with the repository root's configuration, mypy with the example's
+  # strict one, and its offline tests, then a check that no test skipped. No
+  # cache, as everywhere here.
+  example:
+    name: example
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    concurrency:
+      group: >-
+        ${{ github.workflow }}-${{ github.ref }}-example-${{
+        (github.event_name == 'schedule' || github.event_name == 'workflow_dispatch')
+        && github.run_id || 'shared' }}
+      cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7  # v10.2.0
+        with:
+          version-file: uv.lock
+          python-version: "3.13"
+          enable-cache: false
+      - name: Install the example from its uv.lock
+        run: uv sync --locked --directory examples/food-ordering-system
+      - name: ruff check
+        run: uv run --locked --directory examples/food-ordering-system ruff check .
+      - name: ruff format
+        run: uv run --locked --directory examples/food-ordering-system ruff format --check .
+      - name: mypy
+        run: uv run --locked --directory examples/food-ordering-system mypy
+      # No -W error: it would override the one ignore in the example's
+      # filterwarnings, which already turns every other warning into an error.
+      - name: Example tests
+        run: >-
+          uv run --locked --directory examples/food-ordering-system
+          python -m pytest -q --junitxml="$RUNNER_TEMP/junit.xml"
+      # Exits 1 when a test skipped, and 2 when no test ran.
+      - name: Check that every test ran
+        run: >-
+          uv run --no-project --python 3.11 python .github/scripts/check_junit.py
+          "$RUNNER_TEMP/junit.xml"
+
+  # Scans the dependency trees a consumer can install with Trivy
+  # (.github/scripts/audit-deps.sh): the newest and the lowest runtime versions
+  # the ranges allow, resolved for Python 3.11, and the dev, docs, release and
+  # example trees. Fails on a fixable HIGH or CRITICAL advisory, and when a
+  # scan did not complete. The report goes to the job summary and the
+  # dependency-audit artifact; each blocking advisory is also an annotation,
+  # which reaches fork pull requests.
+  # Read-only on purpose: resolving the trees can run a dependency's setup.py,
+  # and a pull request controls the dependency list.
+  audit:
+    name: audit
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    permissions:
+      contents: read
+    concurrency:
+      group: >-
+        ${{ github.workflow }}-${{ github.ref }}-audit-${{
+        (github.event_name == 'schedule' || github.event_name == 'workflow_dispatch')
+        && github.run_id || 'shared' }}
+      cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7  # v10.2.0
+        with:
+          version-file: uv.lock
+          python-version: "3.11"
+          enable-cache: false
+      - name: Install Trivy
+        run: .github/scripts/fetch-binary.sh "$TRIVY_URL" "$TRIVY_SHA256" trivy "$RUNNER_TEMP/bin"
+      - name: Scan the dependency trees
+        run: .github/scripts/audit-deps.sh "$AUDIT_DIR"
+      # The summary and the gate read the same reports with the same tested
+      # code, so they cannot disagree. They run after a failed scan too: the
+      # summary then says what is missing, and the gate exits 2. The dev, docs,
+      # release and example trees are gated unless a caller passes
+      # gate-dev-tree: false; toJSON tells that false from the null of a run
+      # that is not called.
+      - name: Write the job summary
+        if: ${{ !cancelled() }}
+        run: >-
+          .github/scripts/audit-report.sh summary
+          "pyproject.toml dependencies and groups, and the example, resolved for Python 3.11"
+      - name: Gate on fixable HIGH and CRITICAL advisories
+        if: ${{ !cancelled() }}
+        env:
+          GATE_DEV_TREE: ${{ toJSON(inputs.gate-dev-tree) }}
+        run: .github/scripts/audit-report.sh gate
+      # Uploaded whatever the gate decided: notify reads it on scheduled runs.
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
+        if: ${{ !cancelled() }}
+        with:
+          name: dependency-audit
+          path: ${{ env.AUDIT_DIR }}/
+          retention-days: 30
+          if-no-files-found: warn
+
+  # The tests of the scripts in .github/scripts, the gates' own code, which they
+  # run against planted results, workflows, trees and repositories, and of the
+  # workflow facts that actionlint and zizmor do not check. Two of them run the
+  # pinned gitleaks and Trivy, installed here as the gitleaks and audit jobs
+  # install them. pytest
+  # comes from uv.lock; -c reads the scripts' own pytest.ini rather than the
+  # package's [tool.pytest]. shellcheck runs on the scripts in the prek job.
+  audit-scripts:
+    name: audit-scripts
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    permissions:
+      contents: read
+    concurrency:
+      group: >-
+        ${{ github.workflow }}-${{ github.ref }}-audit-scripts-${{
+        (github.event_name == 'schedule' || github.event_name == 'workflow_dispatch')
+        && github.run_id || 'shared' }}
+      cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7  # v10.2.0
+        with:
+          version-file: uv.lock
+          python-version: "3.11"
+          enable-cache: false
+      - name: Install gitleaks
+        run: >-
+          .github/scripts/fetch-binary.sh "$GITLEAKS_URL" "$GITLEAKS_SHA256" gitleaks
+          "$RUNNER_TEMP/bin"
+      - name: Install Trivy
+        run: .github/scripts/fetch-binary.sh "$TRIVY_URL" "$TRIVY_SHA256" trivy "$RUNNER_TEMP/bin"
+      - name: Run the CI script tests
+        run: uv run --locked --only-dev pytest -c .github/scripts/pytest.ini -q .github/scripts
+
+  # Fails a pull request that brings in a dependency version, a Python package
+  # or an action, with a known HIGH or CRITICAL advisory. It compares the pull
+  # request's dependency graph with its base's, so it runs on pull requests
+  # only; elsewhere the job is skipped, which CI accepts. No comment on the pull
+  # request, so the job, and a release that calls this workflow, need no write
+  # permission; the result is in the job log.
+  dependency-review:
+    name: dependency-review
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions:
+      contents: read
+    concurrency:
+      group: ${{ github.workflow }}-${{ github.ref }}-dependency-review
+      cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+    steps:
+      - uses: actions/dependency-review-action@a1d282b36b6f3519aa1f3fc636f609c47dddb294  # v5.0.0
+        with:
+          fail-on-severity: high
+          comment-summary-in-pr: never
+
+  # Mutation tests on the lines of the package a pull request adds or changes
+  # (.github/scripts/mutation_gate.py, with mutmut from uv.lock): it fails when the
+  # tests catch fewer than 80% of the mutants. HEAD is the merge commit, so HEAD^1
+  # is the base branch. Bounded at 4 test processes at a time (the runner's CPUs),
+  # 3072 MiB of address space each, which the gate checks the kernel enforces
+  # before it starts, and 25 minutes for the run: a pull request that changes the
+  # whole package (about 1,500 mutants) takes about 12. It runs on pull requests only, as
+  # every change reaches main through one; elsewhere the job is skipped, which CI
+  # accepts with a notice. The report, surviving mutants included, is in the job
+  # summary.
+  mutation:
+    name: mutation
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    permissions:
+      contents: read
+    concurrency:
+      group: ${{ github.workflow }}-${{ github.ref }}-mutation
+      cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          fetch-depth: 2
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7  # v10.2.0
+        with:
+          version-file: uv.lock
+          python-version: "3.13"
+          enable-cache: false
+      - name: Install from uv.lock
+        run: uv sync --locked
+      - name: Run the mutation tests on the changed lines
+        run: .github/scripts/ci-steps.sh mutation
+
+  # actionlint and zizmor on the workflows, apart from the prek job, whose
+  # zizmor hook runs offline. Here zizmor also runs its online audits, such as
+  # known-vulnerable or impostor action commits, with the job's read-only token.
+  # actionlint is the release binary rather than rhysd/actionlint's action,
+  # which builds from unpinned base images. Both versions match the prek
+  # hooks'; change them together.
+  workflow-hardening:
+    name: workflow-hardening
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    concurrency:
+      group: >-
+        ${{ github.workflow }}-${{ github.ref }}-workflow-hardening-${{
+        (github.event_name == 'schedule' || github.event_name == 'workflow_dispatch')
+        && github.run_id || 'shared' }}
+      cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Install actionlint
+        run: >-
+          .github/scripts/fetch-binary.sh "$ACTIONLINT_URL" "$ACTIONLINT_SHA256" actionlint
+          "$RUNNER_TEMP/bin"
+      - name: actionlint
+        run: '"$RUNNER_TEMP/bin/actionlint" -color=false'
+      # Findings go to the job log and annotations, not code scanning, which
+      # would need Advanced Security.
+      - name: zizmor
+        uses: zizmorcore/zizmor-action@cc914d7f3750a2d13d75c7f184a1060aa0e9d482  # v0.6.4
+        with:
+          version: 1.30.1
+          persona: regular
+          advanced-security: false
+          annotations: true
+
+  # Scans the whole history, every branch and tag, for committed secrets: a
+  # secret removed in a later commit is still in a public repository.
+  # gitleaks/gitleaks-action needs a license key for organisations, so the
+  # pinned binary runs instead. Findings are redacted in the log.
+  gitleaks:
+    name: gitleaks
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    concurrency:
+      group: >-
+        ${{ github.workflow }}-${{ github.ref }}-gitleaks-${{
+        (github.event_name == 'schedule' || github.event_name == 'workflow_dispatch')
+        && github.run_id || 'shared' }}
+      cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Install gitleaks
+        run: >-
+          .github/scripts/fetch-binary.sh "$GITLEAKS_URL" "$GITLEAKS_SHA256" gitleaks
+          "$RUNNER_TEMP/bin"
+      # Reads no configuration from the checkout, which a pull request controls,
+      # but for the fingerprints in .github/gitleaks-accept.txt, read from the
+      # base on a pull request (gitleaks-scan.sh says how).
+      - name: Scan the history
+        env:
+          EVENT: ${{ github.event_name }}
+        run: .github/scripts/gitleaks-scan.sh "$RUNNER_TEMP/bin/gitleaks"
+
+  # The end-to-end suite (tests/e2e) against the real Permit API and cloud PDP:
+  # it creates a scratch environment in the project the two secrets name, runs
+  # every tool in it as a requester and a reviewer, and deletes it at the end
+  # (CONTRIBUTING.md). It also runs check_permission against a PDP container,
+  # pinned by digest in tests/e2e/pdp.py, which the test session starts with
+  # docker once the scratch environment's key exists, and removes before the
+  # environment is deleted; a failed test that used it prints its log. A test
+  # compares the OpenAPI document that container publishes with the committed
+  # .github/api-specs/pdp.json, and fails with a diff when POST /allowed
+  # differs. It records the requests the server sent, reports API coverage with an
+  # end-to-end column from them (ci-steps.sh e2e-coverage), and uploads the
+  # record as the e2e-api-record artifact.
+  # Advisory: a Permit outage must not fail CI, which prints its failure as a
+  # warning. It runs in CI's own scheduled and manual runs only,
+  # never on a pull request: the secrets are the e2e environment's, which only
+  # main may deploy to, so no other branch's workflow gets them. Elsewhere it is
+  # skipped, and CI passes that with a notice (SCHEDULED_JOBS); a skip in CI's
+  # own scheduled or manual run fails CI, since it means this if: broke. Without
+  # the secrets pytest exits 2, saying the suite did not run. One concurrency
+  # group for the project: runs wait for each other, and none is cancelled for a
+  # newer one (GitHub still drops a waiting run when another starts waiting).
+  # The scratch environment's API key is masked as soon as it is read. No cache.
+  # The container PDP takes up to 5 minutes to get healthy, hence the timeout.
+  e2e:
+    name: e2e
+    if: >-
+      github.workflow == 'CI' &&
+      (github.event_name == 'schedule' || github.event_name == 'workflow_dispatch')
+    environment: e2e
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    permissions:
+      contents: read
+    concurrency:
+      group: ${{ github.repository }}-permit-e2e-project
+      cancel-in-progress: false
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7  # v10.2.0
+        with:
+          version-file: uv.lock
+          python-version: "3.13"
+          activate-environment: true
+          enable-cache: false
+      - name: Install from uv.lock
+        run: uv sync --locked
+      # -m e2e selects the suite, which pyproject.toml's addopts deselects.
+      # Exits 2 when a secret is missing, before any test or request.
+      # tests/api_record.py records each request the server sends, in the format
+      # of the tests job's record, and beside it the origins of the Permit API,
+      # the cloud PDP and the container PDP.
+      - name: End-to-end tests
+        env:
+          PERMIT_E2E_PROJECT_API_KEY: ${{ secrets.PERMIT_E2E_PROJECT_API_KEY }}
+          PERMIT_E2E_PROJECT_ID: ${{ secrets.PERMIT_E2E_PROJECT_ID }}
+          PERMIT_MCP_API_RECORD: ${{ runner.temp }}/e2e-record.jsonl
+        run: >-
+          python -m pytest -q -W error -m e2e -p no:cacheprovider
+          --junitxml="$RUNNER_TEMP/junit.xml" tests/e2e
+      - name: Check that every test ran
+        run: >-
+          uv run --no-project --python 3.11 python .github/scripts/check_junit.py
+          "$RUNNER_TEMP/junit.xml"
+      # The API coverage report with its end-to-end column filled: which in-scope
+      # operations answered the suite above with a 2xx. The offline record
+      # it also needs is written here, by the offline suite as the tests job's
+      # locked leg runs it (same uv.lock, same Python), rather than downloaded
+      # from that leg: this job then neither waits for the tests matrix nor is
+      # skipped when a leg of it fails. Both run after a failed suite too, so the
+      # column shows what the suite reached; a suite that sent nothing makes the
+      # report exit 2.
+      - name: Offline tests, recorded for the coverage report
+        if: ${{ !cancelled() }}
+        env:
+          PERMIT_MCP_API_RECORD: ${{ runner.temp }}/api-record.jsonl
+        run: python -m pytest -q -W error
+      - name: Report API coverage with the end-to-end record
+        if: ${{ !cancelled() }}
+        run: .github/scripts/ci-steps.sh e2e-coverage
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
+        if: ${{ !cancelled() }}
+        with:
+          name: e2e-api-record
+          path: |
+            ${{ runner.temp }}/e2e-record.jsonl
+            ${{ runner.temp }}/e2e-record.origins.json
+          retention-days: 30
+          if-no-files-found: warn
+
+  # The container PDP's tests (-k container_pdp: check_permission after an
+  # approval, and the comparison of the PDP's published spec with
+  # .github/api-specs/pdp.json) against permitio/pdp-v2:latest instead of the
+  # pinned image (PERMIT_E2E_PDP_IMAGE), so a PDP release that breaks them shows
+  # before the pin moves. A job of its own, not a matrix leg of e2e, so CI's
+  # results and the Slack message report it apart from the pinned run. Advisory
+  # and run when e2e runs, as e2e is, with the same secrets, and in the same
+  # concurrency group, so the two never use the project at the same time; its
+  # scratch environment's key names the job (GITHUB_JOB), so it never meets the
+  # e2e job's.
+  e2e-pdp-latest:
+    name: e2e-pdp-latest
+    if: >-
+      github.workflow == 'CI' &&
+      (github.event_name == 'schedule' || github.event_name == 'workflow_dispatch')
+    environment: e2e
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    permissions:
+      contents: read
+    concurrency:
+      group: ${{ github.repository }}-permit-e2e-project
+      cancel-in-progress: false
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7  # v10.2.0
+        with:
+          version-file: uv.lock
+          python-version: "3.13"
+          activate-environment: true
+          enable-cache: false
+      - name: Install from uv.lock
+        run: uv sync --locked
+      - name: Container PDP tests against the latest PDP
+        env:
+          PERMIT_E2E_PROJECT_API_KEY: ${{ secrets.PERMIT_E2E_PROJECT_API_KEY }}
+          PERMIT_E2E_PROJECT_ID: ${{ secrets.PERMIT_E2E_PROJECT_ID }}
+          PERMIT_E2E_PDP_IMAGE: permitio/pdp-v2:latest
+        run: >-
+          python -m pytest -q -W error -m e2e -k container_pdp -p no:cacheprovider
+          --junitxml="$RUNNER_TEMP/junit.xml" tests/e2e
+      - name: Check that every test ran
+        run: >-
+          uv run --no-project --python 3.11 python .github/scripts/check_junit.py
+          "$RUNNER_TEMP/junit.xml"
+
+  # The one check to require. It runs whatever happened to the jobs it needs,
+  # since GitHub counts a skipped required check as passing, and fails unless
+  # each of them succeeded: a failed, cancelled or skipped job fails it, with
+  # three exceptions. The jobs in PULL_REQUEST_JOBS (dependency-review and
+  # mutation) run on pull requests only, so on any other event each is skipped,
+  # and that passes with a notice. The jobs in SCHEDULED_JOBS (e2e and
+  # e2e-pdp-latest) run in CI's
+  # own scheduled and manual runs only, so anywhere else, a run release.yml
+  # calls included, a skip passes with a notice. In CI's own scheduled and
+  # manual runs a skip fails CI, even for an advisory job: there it means the
+  # job's if: no longer matches. A job in ADVISORY_JOBS (space separated) may
+  # fail or be cancelled without failing CI; its result is printed as a warning.
+  # The prek job's needs check fails when a job is missing from needs,
+  # ADVISORY_JOBS names a job CI does not need, or EXPECTED_JOBS is not the
+  # number of jobs in needs.
+  ci:
+    name: CI
+    if: always()
+    needs:
+      - audit
+      - audit-scripts
+      - dependency-review
+      - docs
+      - e2e
+      - e2e-pdp-latest
+      - example
+      - gitleaks
+      - mutation
+      - package
+      - prek
+      - tests
+      - workflow-hardening
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions:
+      contents: read
+    concurrency:
+      group: >-
+        ${{ github.workflow }}-${{ github.ref }}-ci-${{
+        (github.event_name == 'schedule' || github.event_name == 'workflow_dispatch')
+        && github.run_id || 'shared' }}
+      cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Check the needed jobs
+        env:
+          NEEDS: ${{ toJSON(needs) }}
+          EVENT: ${{ github.event_name }}
+          EXPECTED_JOBS: 13
+          ADVISORY_JOBS: e2e e2e-pdp-latest
+          PULL_REQUEST_JOBS: dependency-review mutation
+          SCHEDULED_JOBS: e2e e2e-pdp-latest
+          WORKFLOW: ${{ github.workflow }}
+        run: .github/scripts/ci-steps.sh results
+
+  # Posts one Slack message on scheduled and manual runs, when no pull request
+  # reads the result: the audit's findings, or that it did not complete, CI's
+  # result, and the results of the e2e suite and of its latest-PDP leg, which CI
+  # treats as advisory. A called
+  # run never notifies: its github.workflow is the caller's name, not CI.
+  # Without SLACK_WEBHOOK_URL the job warns and passes. The message is rendered
+  # from the audit's artifact by the tested format_audit.py, and toJSON quotes
+  # it into the payload, so advisory text cannot break out of it.
+  notify:
+    name: notify
+    needs: [audit, ci, e2e, e2e-pdp-latest]
+    if: >-
+      always() && github.workflow == 'CI' &&
+      (github.event_name == 'schedule' || github.event_name == 'workflow_dispatch')
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions:
+      contents: read
+    concurrency:
+      group: ${{ github.workflow }}-${{ github.ref }}-notify-${{ github.run_id }}
+      cancel-in-progress: false
+    # The secrets context is not available in a step's `if:`, so the steps
+    # test this variable instead.
+    env:
+      SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
+    steps:
+      - name: Warn that the Slack webhook is not set
+        if: env.SLACK_WEBHOOK_URL == ''
+        run: >-
+          echo "::warning title=Slack::SLACK_WEBHOOK_URL is not set, so this run's result
+          was not posted to Slack."
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        if: env.SLACK_WEBHOOK_URL != ''
+        with:
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7  # v10.2.0
+        if: env.SLACK_WEBHOOK_URL != ''
+        with:
+          version-file: uv.lock
+          enable-cache: false
+      # A missing artifact is not an error here: the message then says the
+      # audit did not complete. The only step in this workflow allowed to fail.
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c  # v8.0.1
+        if: env.SLACK_WEBHOOK_URL != ''
+        continue-on-error: true
+        with:
+          name: dependency-audit
+          path: ${{ env.AUDIT_DIR }}
+      - name: Render the message
+        id: message
+        if: env.SLACK_WEBHOOK_URL != ''
+        env:
+          REPO: ${{ github.repository }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          CI_RESULT: ${{ needs.ci.result }}
+          E2E_RESULT: ${{ needs.e2e.result }}
+          E2E_PDP_LATEST_RESULT: ${{ needs.e2e-pdp-latest.result }}
+        run: .github/scripts/audit-report.sh slack
+      - uses: slackapi/slack-github-action@dcb1066f776dd043e64d0e8ba94ca15cc7e1875d  # v4.0.0
+        if: env.SLACK_WEBHOOK_URL != ''
+        with:
+          webhook: ${{ secrets.SLACK_WEBHOOK_URL }}
+          webhook-type: incoming-webhook
+          payload: |
+            text: ${{ toJSON(steps.message.outputs.text) }}

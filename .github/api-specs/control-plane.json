@@ -1,0 +1,894 @@
+{
+  "operations": [
+    {
+      "deprecated": false,
+      "method": "GET",
+      "operationId": "get_api_key_scope",
+      "parameters": [],
+      "path": "/v2/api-key/scope",
+      "requestBody": null,
+      "tags": [
+        "API Keys"
+      ]
+    },
+    {
+      "deprecated": false,
+      "method": "GET",
+      "operationId": "list_access_requests_v2_elements__proj_id___env_id__config__elements_config_id__access_requests_get",
+      "parameters": [
+        {
+          "in": "path",
+          "name": "elements_config_id",
+          "required": true
+        },
+        {
+          "in": "path",
+          "name": "env_id",
+          "required": true
+        },
+        {
+          "in": "path",
+          "name": "proj_id",
+          "required": true
+        },
+        {
+          "in": "query",
+          "name": "page",
+          "required": false
+        },
+        {
+          "in": "query",
+          "name": "per_page",
+          "required": false
+        },
+        {
+          "in": "query",
+          "name": "resource",
+          "required": false
+        },
+        {
+          "in": "query",
+          "name": "resource_instance_id",
+          "required": false
+        },
+        {
+          "in": "query",
+          "name": "role",
+          "required": false
+        },
+        {
+          "in": "query",
+          "name": "status",
+          "required": false
+        },
+        {
+          "in": "query",
+          "name": "tenant",
+          "required": false
+        }
+      ],
+      "path": "/v2/elements/{proj_id}/{env_id}/config/{elements_config_id}/access_requests",
+      "requestBody": null,
+      "tags": [
+        "Access Requests (EAP)"
+      ]
+    },
+    {
+      "deprecated": false,
+      "method": "POST",
+      "operationId": "create_access_request_v2_elements__proj_id___env_id__config__elements_config_id__access_requests_post",
+      "parameters": [
+        {
+          "in": "path",
+          "name": "elements_config_id",
+          "required": true
+        },
+        {
+          "in": "path",
+          "name": "env_id",
+          "required": true
+        },
+        {
+          "in": "path",
+          "name": "proj_id",
+          "required": true
+        }
+      ],
+      "path": "/v2/elements/{proj_id}/{env_id}/config/{elements_config_id}/access_requests",
+      "requestBody": "#/components/schemas/AccessRequestUserCreate",
+      "tags": [
+        "Access Requests (EAP)"
+      ]
+    },
+    {
+      "deprecated": false,
+      "method": "GET",
+      "operationId": "get_access_request_v2_elements__proj_id___env_id__config__elements_config_id__access_requests__access_request_id__get",
+      "parameters": [
+        {
+          "in": "path",
+          "name": "access_request_id",
+          "required": true
+        },
+        {
+          "in": "path",
+          "name": "elements_config_id",
+          "required": true
+        },
+        {
+          "in": "path",
+          "name": "env_id",
+          "required": true
+        },
+        {
+          "in": "path",
+          "name": "proj_id",
+          "required": true
+        },
+        {
+          "in": "query",
+          "name": "page",
+          "required": false
+        },
+        {
+          "in": "query",
+          "name": "per_page",
+          "required": false
+        }
+      ],
+      "path": "/v2/elements/{proj_id}/{env_id}/config/{elements_config_id}/access_requests/{access_request_id}",
+      "requestBody": null,
+      "tags": [
+        "Access Requests (EAP)"
+      ]
+    },
+    {
+      "deprecated": false,
+      "method": "PUT",
+      "operationId": "approve_access_request_v2_elements__proj_id___env_id__config__elements_config_id__access_requests__access_request_id__approve_put",
+      "parameters": [
+        {
+          "in": "path",
+          "name": "access_request_id",
+          "required": true
+        },
+        {
+          "in": "path",
+          "name": "elements_config_id",
+          "required": true
+        },
+        {
+          "in": "path",
+          "name": "env_id",
+          "required": true
+        },
+        {
+          "in": "path",
+          "name": "proj_id",
+          "required": true
+        }
+      ],
+      "path": "/v2/elements/{proj_id}/{env_id}/config/{elements_config_id}/access_requests/{access_request_id}/approve",
+      "requestBody": "#/components/schemas/AccessRequestReview",
+      "tags": [
+        "Access Requests (EAP)"
+      ]
+    },
+    {
+      "deprecated": false,
+      "method": "PUT",
+      "operationId": "cancel_access_request_v2_elements__proj_id___env_id__config__elements_config_id__access_requests__access_request_id__cancel_put",
+      "parameters": [
+        {
+          "in": "path",
+          "name": "access_request_id",
+          "required": true
+        },
+        {
+          "in": "path",
+          "name": "elements_config_id",
+          "required": true
+        },
+        {
+          "in": "path",
+          "name": "env_id",
+          "required": true
+        },
+        {
+          "in": "path",
+          "name": "proj_id",
+          "required": true
+        }
+      ],
+      "path": "/v2/elements/{proj_id}/{env_id}/config/{elements_config_id}/access_requests/{access_request_id}/cancel",
+      "requestBody": null,
+      "tags": [
+        "Access Requests (EAP)"
+      ]
+    },
+    {
+      "deprecated": false,
+      "method": "PUT",
+      "operationId": "deny_access_request_v2_elements__proj_id___env_id__config__elements_config_id__access_requests__access_request_id__deny_put",
+      "parameters": [
+        {
+          "in": "path",
+          "name": "access_request_id",
+          "required": true
+        },
+        {
+          "in": "path",
+          "name": "elements_config_id",
+          "required": true
+        },
+        {
+          "in": "path",
+          "name": "env_id",
+          "required": true
+        },
+        {
+          "in": "path",
+          "name": "proj_id",
+          "required": true
+        }
+      ],
+      "path": "/v2/elements/{proj_id}/{env_id}/config/{elements_config_id}/access_requests/{access_request_id}/deny",
+      "requestBody": "#/components/schemas/AccessRequestReviewDeny",
+      "tags": [
+        "Access Requests (EAP)"
+      ]
+    },
+    {
+      "deprecated": false,
+      "method": "PATCH",
+      "operationId": "update_access_request_reviewer_v2_elements__proj_id___env_id__config__elements_config_id__access_requests__access_request_id__reviewer_patch",
+      "parameters": [
+        {
+          "in": "path",
+          "name": "access_request_id",
+          "required": true
+        },
+        {
+          "in": "path",
+          "name": "elements_config_id",
+          "required": true
+        },
+        {
+          "in": "path",
+          "name": "env_id",
+          "required": true
+        },
+        {
+          "in": "path",
+          "name": "proj_id",
+          "required": true
+        }
+      ],
+      "path": "/v2/elements/{proj_id}/{env_id}/config/{elements_config_id}/access_requests/{access_request_id}/reviewer",
+      "requestBody": "#/components/schemas/AccessRequestReview",
+      "tags": [
+        "Access Requests (EAP)"
+      ]
+    },
+    {
+      "deprecated": false,
+      "method": "GET",
+      "operationId": "list_operation_approvals",
+      "parameters": [
+        {
+          "in": "path",
+          "name": "elements_config_id",
+          "required": true
+        },
+        {
+          "in": "path",
+          "name": "env_id",
+          "required": true
+        },
+        {
+          "in": "path",
+          "name": "proj_id",
+          "required": true
+        },
+        {
+          "in": "query",
+          "name": "page",
+          "required": false
+        },
+        {
+          "in": "query",
+          "name": "per_page",
+          "required": false
+        },
+        {
+          "in": "query",
+          "name": "resource",
+          "required": false
+        },
+        {
+          "in": "query",
+          "name": "resource_instance",
+          "required": false
+        },
+        {
+          "in": "query",
+          "name": "status",
+          "required": false
+        }
+      ],
+      "path": "/v2/elements/{proj_id}/{env_id}/config/{elements_config_id}/operation_approval",
+      "requestBody": null,
+      "tags": [
+        "Operation Approval (EAP)"
+      ]
+    },
+    {
+      "deprecated": false,
+      "method": "POST",
+      "operationId": "create_operation_approval",
+      "parameters": [
+        {
+          "in": "path",
+          "name": "elements_config_id",
+          "required": true
+        },
+        {
+          "in": "path",
+          "name": "env_id",
+          "required": true
+        },
+        {
+          "in": "path",
+          "name": "proj_id",
+          "required": true
+        }
+      ],
+      "path": "/v2/elements/{proj_id}/{env_id}/config/{elements_config_id}/operation_approval",
+      "requestBody": "#/components/schemas/OperationApprovalUserCreate",
+      "tags": [
+        "Operation Approval (EAP)"
+      ]
+    },
+    {
+      "deprecated": false,
+      "method": "GET",
+      "operationId": "get_operation_approval",
+      "parameters": [
+        {
+          "in": "path",
+          "name": "elements_config_id",
+          "required": true
+        },
+        {
+          "in": "path",
+          "name": "env_id",
+          "required": true
+        },
+        {
+          "in": "path",
+          "name": "operation_approval_id",
+          "required": true
+        },
+        {
+          "in": "path",
+          "name": "proj_id",
+          "required": true
+        },
+        {
+          "in": "query",
+          "name": "page",
+          "required": false
+        },
+        {
+          "in": "query",
+          "name": "per_page",
+          "required": false
+        }
+      ],
+      "path": "/v2/elements/{proj_id}/{env_id}/config/{elements_config_id}/operation_approval/{operation_approval_id}",
+      "requestBody": null,
+      "tags": [
+        "Operation Approval (EAP)"
+      ]
+    },
+    {
+      "deprecated": false,
+      "method": "PUT",
+      "operationId": "approve_operation_approval",
+      "parameters": [
+        {
+          "in": "path",
+          "name": "elements_config_id",
+          "required": true
+        },
+        {
+          "in": "path",
+          "name": "env_id",
+          "required": true
+        },
+        {
+          "in": "path",
+          "name": "operation_approval_id",
+          "required": true
+        },
+        {
+          "in": "path",
+          "name": "proj_id",
+          "required": true
+        }
+      ],
+      "path": "/v2/elements/{proj_id}/{env_id}/config/{elements_config_id}/operation_approval/{operation_approval_id}/approve",
+      "requestBody": "#/components/schemas/OperationApprovalReview",
+      "tags": [
+        "Operation Approval (EAP)"
+      ]
+    },
+    {
+      "deprecated": false,
+      "method": "PUT",
+      "operationId": "cancel_operation_approval",
+      "parameters": [
+        {
+          "in": "path",
+          "name": "elements_config_id",
+          "required": true
+        },
+        {
+          "in": "path",
+          "name": "env_id",
+          "required": true
+        },
+        {
+          "in": "path",
+          "name": "operation_approval_id",
+          "required": true
+        },
+        {
+          "in": "path",
+          "name": "proj_id",
+          "required": true
+        }
+      ],
+      "path": "/v2/elements/{proj_id}/{env_id}/config/{elements_config_id}/operation_approval/{operation_approval_id}/cancel",
+      "requestBody": null,
+      "tags": [
+        "Operation Approval (EAP)"
+      ]
+    },
+    {
+      "deprecated": false,
+      "method": "PUT",
+      "operationId": "deny_operation_approval",
+      "parameters": [
+        {
+          "in": "path",
+          "name": "elements_config_id",
+          "required": true
+        },
+        {
+          "in": "path",
+          "name": "env_id",
+          "required": true
+        },
+        {
+          "in": "path",
+          "name": "operation_approval_id",
+          "required": true
+        },
+        {
+          "in": "path",
+          "name": "proj_id",
+          "required": true
+        }
+      ],
+      "path": "/v2/elements/{proj_id}/{env_id}/config/{elements_config_id}/operation_approval/{operation_approval_id}/deny",
+      "requestBody": "#/components/schemas/OperationApprovalReview",
+      "tags": [
+        "Operation Approval (EAP)"
+      ]
+    },
+    {
+      "deprecated": false,
+      "method": "PATCH",
+      "operationId": "update_operation_approval_reviewer",
+      "parameters": [
+        {
+          "in": "path",
+          "name": "elements_config_id",
+          "required": true
+        },
+        {
+          "in": "path",
+          "name": "env_id",
+          "required": true
+        },
+        {
+          "in": "path",
+          "name": "operation_approval_id",
+          "required": true
+        },
+        {
+          "in": "path",
+          "name": "proj_id",
+          "required": true
+        }
+      ],
+      "path": "/v2/elements/{proj_id}/{env_id}/config/{elements_config_id}/operation_approval/{operation_approval_id}/reviewer",
+      "requestBody": "#/components/schemas/OperationApprovalReview",
+      "tags": [
+        "Operation Approval (EAP)"
+      ]
+    },
+    {
+      "deprecated": false,
+      "method": "GET",
+      "operationId": "list_access_requests",
+      "parameters": [
+        {
+          "in": "path",
+          "name": "elements_config_id",
+          "required": true
+        },
+        {
+          "in": "path",
+          "name": "env_id",
+          "required": true
+        },
+        {
+          "in": "path",
+          "name": "proj_id",
+          "required": true
+        },
+        {
+          "in": "path",
+          "name": "tenant_id",
+          "required": true
+        },
+        {
+          "in": "path",
+          "name": "user_id",
+          "required": true
+        },
+        {
+          "in": "query",
+          "name": "page",
+          "required": false
+        },
+        {
+          "in": "query",
+          "name": "per_page",
+          "required": false
+        },
+        {
+          "in": "query",
+          "name": "resource",
+          "required": false
+        },
+        {
+          "in": "query",
+          "name": "resource_instance_id",
+          "required": false
+        },
+        {
+          "in": "query",
+          "name": "role",
+          "required": false
+        },
+        {
+          "in": "query",
+          "name": "status",
+          "required": false
+        }
+      ],
+      "path": "/v2/facts/{proj_id}/{env_id}/access_requests/{elements_config_id}/user/{user_id}/tenant/{tenant_id}",
+      "requestBody": null,
+      "tags": [
+        "Access Requests (EAP)"
+      ]
+    },
+    {
+      "deprecated": false,
+      "method": "POST",
+      "operationId": "create_access_request",
+      "parameters": [
+        {
+          "in": "path",
+          "name": "elements_config_id",
+          "required": true
+        },
+        {
+          "in": "path",
+          "name": "env_id",
+          "required": true
+        },
+        {
+          "in": "path",
+          "name": "proj_id",
+          "required": true
+        },
+        {
+          "in": "path",
+          "name": "tenant_id",
+          "required": true
+        },
+        {
+          "in": "path",
+          "name": "user_id",
+          "required": true
+        }
+      ],
+      "path": "/v2/facts/{proj_id}/{env_id}/access_requests/{elements_config_id}/user/{user_id}/tenant/{tenant_id}",
+      "requestBody": "#/components/schemas/AccessRequestUserCreate",
+      "tags": [
+        "Access Requests (EAP)"
+      ]
+    },
+    {
+      "deprecated": false,
+      "method": "GET",
+      "operationId": "get_access_request",
+      "parameters": [
+        {
+          "in": "path",
+          "name": "access_request_id",
+          "required": true
+        },
+        {
+          "in": "path",
+          "name": "elements_config_id",
+          "required": true
+        },
+        {
+          "in": "path",
+          "name": "env_id",
+          "required": true
+        },
+        {
+          "in": "path",
+          "name": "proj_id",
+          "required": true
+        },
+        {
+          "in": "path",
+          "name": "tenant_id",
+          "required": true
+        },
+        {
+          "in": "path",
+          "name": "user_id",
+          "required": true
+        }
+      ],
+      "path": "/v2/facts/{proj_id}/{env_id}/access_requests/{elements_config_id}/user/{user_id}/tenant/{tenant_id}/{access_request_id}",
+      "requestBody": null,
+      "tags": [
+        "Access Requests (EAP)"
+      ]
+    },
+    {
+      "deprecated": false,
+      "method": "PUT",
+      "operationId": "approve_access_request",
+      "parameters": [
+        {
+          "in": "path",
+          "name": "access_request_id",
+          "required": true
+        },
+        {
+          "in": "path",
+          "name": "elements_config_id",
+          "required": true
+        },
+        {
+          "in": "path",
+          "name": "env_id",
+          "required": true
+        },
+        {
+          "in": "path",
+          "name": "proj_id",
+          "required": true
+        },
+        {
+          "in": "path",
+          "name": "tenant_id",
+          "required": true
+        },
+        {
+          "in": "path",
+          "name": "user_id",
+          "required": true
+        }
+      ],
+      "path": "/v2/facts/{proj_id}/{env_id}/access_requests/{elements_config_id}/user/{user_id}/tenant/{tenant_id}/{access_request_id}/approve",
+      "requestBody": "#/components/schemas/AccessRequestReview",
+      "tags": [
+        "Access Requests (EAP)"
+      ]
+    },
+    {
+      "deprecated": false,
+      "method": "PUT",
+      "operationId": "cancel_access_request",
+      "parameters": [
+        {
+          "in": "path",
+          "name": "access_request_id",
+          "required": true
+        },
+        {
+          "in": "path",
+          "name": "elements_config_id",
+          "required": true
+        },
+        {
+          "in": "path",
+          "name": "env_id",
+          "required": true
+        },
+        {
+          "in": "path",
+          "name": "proj_id",
+          "required": true
+        },
+        {
+          "in": "path",
+          "name": "tenant_id",
+          "required": true
+        },
+        {
+          "in": "path",
+          "name": "user_id",
+          "required": true
+        }
+      ],
+      "path": "/v2/facts/{proj_id}/{env_id}/access_requests/{elements_config_id}/user/{user_id}/tenant/{tenant_id}/{access_request_id}/cancel",
+      "requestBody": null,
+      "tags": [
+        "Access Requests (EAP)"
+      ]
+    },
+    {
+      "deprecated": false,
+      "method": "PUT",
+      "operationId": "deny_access_request",
+      "parameters": [
+        {
+          "in": "path",
+          "name": "access_request_id",
+          "required": true
+        },
+        {
+          "in": "path",
+          "name": "elements_config_id",
+          "required": true
+        },
+        {
+          "in": "path",
+          "name": "env_id",
+          "required": true
+        },
+        {
+          "in": "path",
+          "name": "proj_id",
+          "required": true
+        },
+        {
+          "in": "path",
+          "name": "tenant_id",
+          "required": true
+        },
+        {
+          "in": "path",
+          "name": "user_id",
+          "required": true
+        }
+      ],
+      "path": "/v2/facts/{proj_id}/{env_id}/access_requests/{elements_config_id}/user/{user_id}/tenant/{tenant_id}/{access_request_id}/deny",
+      "requestBody": "#/components/schemas/AccessRequestReviewDeny",
+      "tags": [
+        "Access Requests (EAP)"
+      ]
+    },
+    {
+      "deprecated": false,
+      "method": "PATCH",
+      "operationId": "update_access_request_reviewer",
+      "parameters": [
+        {
+          "in": "path",
+          "name": "access_request_id",
+          "required": true
+        },
+        {
+          "in": "path",
+          "name": "elements_config_id",
+          "required": true
+        },
+        {
+          "in": "path",
+          "name": "env_id",
+          "required": true
+        },
+        {
+          "in": "path",
+          "name": "proj_id",
+          "required": true
+        },
+        {
+          "in": "path",
+          "name": "tenant_id",
+          "required": true
+        },
+        {
+          "in": "path",
+          "name": "user_id",
+          "required": true
+        }
+      ],
+      "path": "/v2/facts/{proj_id}/{env_id}/access_requests/{elements_config_id}/user/{user_id}/tenant/{tenant_id}/{access_request_id}/reviewer",
+      "requestBody": "#/components/schemas/AccessRequestReview",
+      "tags": [
+        "Access Requests (EAP)"
+      ]
+    },
+    {
+      "deprecated": false,
+      "method": "GET",
+      "operationId": "list_resource_instances",
+      "parameters": [
+        {
+          "in": "path",
+          "name": "env_id",
+          "required": true
+        },
+        {
+          "in": "path",
+          "name": "proj_id",
+          "required": true
+        },
+        {
+          "in": "query",
+          "name": "detailed",
+          "required": false
+        },
+        {
+          "in": "query",
+          "name": "include_total_count",
+          "required": false
+        },
+        {
+          "in": "query",
+          "name": "page",
+          "required": false
+        },
+        {
+          "in": "query",
+          "name": "per_page",
+          "required": false
+        },
+        {
+          "in": "query",
+          "name": "resource",
+          "required": false
+        },
+        {
+          "in": "query",
+          "name": "search",
+          "required": false
+        },
+        {
+          "in": "query",
+          "name": "tenant",
+          "required": false
+        }
+      ],
+      "path": "/v2/facts/{proj_id}/{env_id}/resource_instances",
+      "requestBody": null,
+      "tags": [
+        "Resource Instances"
+      ]
+    }
+  ]
+}

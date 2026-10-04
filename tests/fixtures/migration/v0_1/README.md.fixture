@@ -1,0 +1,7 @@
+# Family food ordering
+
+Add the Permit server to Claude Desktop:
+
+    "args": ["--directory", "/ABSOLUTE/PATH/TO/permit-mcp/src/permit_mcp", "run", "server.py"]
+
+The model passes the signed-in member's user_id to every Permit tool.

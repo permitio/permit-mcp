@@ -8,7 +8,16 @@ wheels/
 
 # Virtual environments
 .venv
+
+# Local configuration
 .env
 
-food_ordering.db
-uv.lock
+# The API reference site: build output, the pages scripts/docs_pages.py writes,
+# and Zensical's cache
+/site/
+/docs/reference/tools.md
+/docs/llms.txt
+/.cache/
+
+# mutmut's working copy (.github/scripts/mutation_gate.py)
+mutants/

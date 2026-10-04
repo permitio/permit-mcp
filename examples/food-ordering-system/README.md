@@ -1,162 +1,207 @@
-# Family Food Ordering System
-The Family Food-Ordering CLI is a simple command-line interface that lets authenticated family members browse restaurants, place orders, and manage access. 
-It is powered by a Permit-based MCP server and an LLM backend.
+# Family food ordering
 
-**How it works**:
-The system allows parents and children to order dishes from various restaurants, with some restrictions. 
-Children can only access certain restaurants or dishes if they’ve been granted permission.
+A chat in the terminal where family members order food from restaurants through an LLM
+(Gemini). Parents and children sign in; the model works with the Permit MCP tools and two
+tools of the app's own, and every one of those tools acts as the signed-in user. The app's
+own tools and its seed command use the [Permit SDK](https://pypi.org/project/permit/) (`permit`)
+with the same `PERMIT_*` settings as the MCP tools.
 
-- To access restricted restaurants, children must submit an access request.
-- For certain dishes, children must request one-time approval before they can order.
+- Restaurants are instances of a `restaurants` resource type in Permit, with ReBAC roles. A
+  child sees the menu of a restaurant only with the `child-can-view` role on it. For another
+  restaurant, the child files an access request, and a parent approves or denies it.
+- A child orders a dish above $10.00 only with a parent's one-time approval: an operation
+  approval request on the restaurant. The order uses the approval up.
+- Parents list, approve and deny the requests through the same chat.
 
-## Overview
+## How the signed-in user reaches the tools
 
-This project is made up of three main layers:
+The backend authenticates the user, and the MCP tools act as that user through an identity
+resolver bound in code. The model never names the user: no tool takes a user argument, and
+the system instruction does not say who the user is.
 
-1. **Custom MCP Server**:
-A lightweight extension of the Permit MCP server that adds two tools:
+1. `food-ordering-chat` posts the username and password to `POST /token`. The backend checks
+   them against the database and returns a JWT, signed with `FOOD_ORDERING_JWT_SECRET`,
+   whose subject is the username. The username is the user's Permit user key.
+2. The chat opens the websocket `/ws/chat` with that token in the `Authorization` header. The
+   backend verifies the token (an HS256 signature with its key, expiry, a known user) before
+   it accepts the connection, and closes it with code 1008 otherwise. It also closes the
+   connection with code 1008 when the token expires, 30 minutes after sign-in; sign in again
+   to go on.
+3. For the accepted connection, the backend builds an MCP server of its own
+   (`food_ordering/session.py`), bound to that user:
 
-- `list_dishes` – shows available meals.
-- `order_dish` – places orders with permission checks and pricing rules.
+   ```python
+   identity = bound_user(user.username)
+   PermitTools(settings, identity).register(server, exclude=...)
+   FoodTools(db, permit, identity).register(server)
+   ```
 
-2. **FastAPI Backend**:
-The backend securely connects to the MCP server by spawning a subprocess. It passes user queries and the available tools to a language model (Gemini), which handles natural language queries like “I want to order a pizza.” It exposes a WebSocket endpoint for real-time chat.
+   It talks to that server through an in-process MCP client (`mcp.client.Client`). A
+   child's server leaves out the reviewer tools.
+4. Gemini sees the server's tools and asks for tool calls; the backend makes them through the
+   session's client. Whatever arguments the model sends, a `user_id` included, every request
+   to Permit is made as the session's user.
 
-3. **CLI Tool**:
-A command-line chat interface where users can log in and talk to the system. It sends user messages to the backend over WebSocket and displays responses. 
+The app's own tools, `list_dishes` and `order_dish`, follow the same rule as the Permit tools:
+they take the session's resolver, ask it for the caller on every call, and check permissions
+with `permit.check` as that user. A caller who is no longer in the database is refused, even
+in a session that is already open.
 
-## Prerequisites
+`order_dish` uses up a child's one-time approval: after the PDP allows `operate`, it removes
+the `_Approved_` role with `permit.api.users.unassign_role`. The PDP can still allow `operate`
+for a moment after that, so the removal decides: when Permit answers that there is no
+approval to remove, the order is refused. One approval allows one order.
 
-- Python >= 3.10
-- `uv` >= 0.6.1
-- Running instance of the [Local Permit PDP](https://docs.permit.io/how-to/deploy/deploy-to-production/#installing-the-pdp)
+Why a server per session and `bound_user`: the backend and the MCP server run in one process,
+and the backend already knows who the user is when the websocket opens. Binding the user when
+the session's server is built fixes it for the session's lifetime, and nothing per call has
+to carry it. The alternative, an MCP server over HTTP behind MCP authentication, where a
+`TokenVerifier` checks the app's JWT and `access_token_subject()` acts as its subject, fits
+when the MCP server runs apart from the backend; here it would add a network hop and a second
+check of the same token.
 
-## Setting up Permit
+## Set up Permit
 
-Let's start by defining the resource for which we wish to create and manage access requests, along with its access control policies and Elements.
+### The resource and its roles
 
-Permit Elements is a set of prebuilt and embeddable UI components that provide fully functional access control. It enables us to quickly set up access requests and operation approval flows in our system.
+In the Permit dashboard, go to Policy, Resources, and create a resource `restaurants` with two
+ReBAC roles, `parent` and `child-can-view`.
 
-There are four types of Permit Elements: two for access request flows and the other two for operation approval.
+![The restaurants resource](./assets/create-resource.png)
 
-- **Access Request Element**: Enable users to request access to restricted resources.
-- **User Management Element**: To control which users are eligible to manage access requests submitted by others, based on their permission levels, and to approve or deny requests.
-- **Operation Approval Element**: Enable users to request approval for a specific action on a resource.
-- **Approval Management Element**: To manage operational approval requests.
+In the Policy Editor, give `parent` create, read, update and delete, and `child-can-view` read.
 
-In addition to being used as UI components, Permit Elements can also be interacted with via the Permit API, which is used to build the Permit MCP Server.
+![The policy of the two roles](./assets/policy.png)
 
-### Access Control Design
+### The elements
 
-For our food ordering system, we'll define:
+Create a User Management element for the access requests:
 
-- A resource called "restaurant"
-- Two roles, one for parents and the other for children who have access to a restaurant.
-    - `parent`: Can create, read, update, and delete dishes in a restaurant.
-    - `child-can-view`: Can only read dishes.
-- A user management element called "Restaurant requests" to enable parents to manage requests sent by children to access a restricted restaurant.
-- An operation approval element called "Dish approval" will add two extra roles to the restaurant resource (`Reviewer` and `Approved`). These roles will determine who can review an approval request and whose request has been approved.
-- An approval management element called "Dish requests".
+- Name: Restaurant requests
+- Configure elements based on: ReBAC Resource Roles
+- Resource type: restaurants
+- Role permission levels: level 1 (Workspace Owner) `parent`; assignable roles
+  `child-can-view`
 
-### Create a Resource
+![The User Management element](./assets/user-management.png)
 
-In your Permit dashboard, navigate to Policy > Resources, then click on the **Create a Resource** button. Name the resource `restaurants` and add these two ReBAC roles: `parent` and `child-can-view`. 
+Its Get Code dialog shows its key, `restaurant-requests`: the value of
+`PERMIT_ACCESS_REQUEST_ELEMENT`.
 
-![image info](./assets/create-resource.png)
+![The element's key](./assets/user-code.png)
 
-In the **Policy Editor** tab, give the added ReBAC roles the following permissions:
+Create an Operation Approval element named "Dish approval" on the `restaurants` resource. It
+adds two roles to the resource, `_Approved_` and `_Reviewer_`, and an `operate` action.
 
-![image info](./assets/policy.png)
+![The Operation Approval element](./assets/approval-element.png)
 
-### Create User Management Element 
-Navigate to elements in the sidebar and create a user management element with the following values: 
+Then, in the Policy Editor, check that `restaurants#_Approved_` has the `operate` permission,
+and grant it if not. `order_dish` asks the PDP for `operate` before it orders a dish above
+$10.00 for a child, so without it every such order is refused, approved or not.
 
-  - Name: Restaurant requests
-  - Configure elements based on: ReBAC Resource Roles
-  - Resource Type: restaurants
-  - Role permission levels: 
-    - Level 1 - Workspace Owner: parent
-    - Assignable Roles: child-can-view
+Create an Approval Management element named "Dish requests". Its key, `dish-requests`, is the
+value of `PERMIT_OPERATION_APPROVAL_ELEMENT`.
 
-![image info](./assets/user-management.png)
+![The Approval Management element](./assets/approval-managment.png)
 
-Click **Create**. Then click on **Get Code** in the new user management tab. You will see the element config ID `restaurant-requests`. Take note of it, as we will use it later.
+## Set up the app
 
-![image info](./assets/user-code.png)
-
-### Create Operation Approval Element
-
-Create an operation approval element with the following values:
-- Name: Dish approval
-- Resource Type: `restaurants`
-
-![approval-element](./assets/approval-element.png)
-
-### Create Approval Management
-
-Create an approval management element called "Dish Requests". 
-
-![approval-managment-element](./assets/approval-managment.png)
-
-Get the element config ID "dish-requests" and take note of it, as we will use it later on.
-
-## Setting up our CLI project
-
-Enter the following commands in the terminal to clone the project, create a virtual environment, and install the dependencies:
-
-```shell
-git clone <repository_url>
-cd examples/food-ordering-system
-uv venv
-source .venv/bin/activate # For Windows: .venv\Scripts\activate
-uv pip install -e . 
-```
-
-Create a `.env` file in the root directory and specify the following variables: 
+You need [uv](https://docs.astral.sh/uv/) 0.12.19 or newer and a
+[Gemini API key](https://aistudio.google.com/app/apikey). The example installs `permit-mcp`
+from this repository's checkout.
 
 ```shell
-TENANT=  # e.g default
-RESOURCE_KEY= # The key of the resource you want to manage access for.
-PERMIT_PDP_URL=  # The local Permit PDP URL http://localhost:7766
-PERMIT_API_KEY=
-PROJECT_ID=
-ENV_ID=
-ACCESS_ELEMENTS_CONFIG_ID=
-OPERATION_ELEMENTS_CONFIG_ID= 
-GEMINI_API_KEY=
-DB_NAME= # e.g food_ordering.db
+git clone https://github.com/permitio/permit-mcp
+cd permit-mcp/examples/food-ordering-system
+uv sync --locked
+cp .env.example .env    # then fill it in
 ```
 
-You can use the following resources to help you do that: 
-- [PERMIT_PDP_URL](https://docs.permit.io/how-to/deploy/deploy-to-production/#installing-the-pdp)
-- [PERMIT_API_KEY](https://docs.permit.io/overview/use-the-permit-api-and-sdk#obtain-your-api-key)
-- [PROJECT_ID](https://docs.permit.io/api/examples/get-project-and-env#get-project-id-or-key)
-- [ENV_ID](https://docs.permit.io/api/examples/get-project-and-env#get-environment-id-or-key)
-- [GEMINI_API_KEY](https://aistudio.google.com/app/apikey)
+| Variable | Default | Meaning |
+| --- | --- | --- |
+| `PERMIT_API_KEY` | required | An environment-level Permit API key. |
+| `PERMIT_RESOURCE` | required | `restaurants`. The app's own tools and the seed use it too. |
+| `PERMIT_ACCESS_REQUEST_ELEMENT` | required here | `restaurant-requests`, the User Management element. |
+| `PERMIT_OPERATION_APPROVAL_ELEMENT` | required here | `dish-requests`, the Approval Management element. |
+| `PERMIT_TENANT` | `default` | The tenant of the restaurants and users. |
+| `PERMIT_PDP_URL` | `https://cloudpdp.api.permit.io` | The PDP that answers permission checks. The cloud PDP evaluates ReBAC policies. |
+| `FOOD_ORDERING_JWT_SECRET` | required | The key that signs and verifies sign-in tokens, at least 32 bytes, such as the output of `openssl rand -hex 32`. There is no default: the server does not start without it. |
+| `FOOD_ORDERING_DB` | `food_ordering.db` | The SQLite database. |
+| `GEMINI_API_KEY` | required | The Gemini API key. |
+| `GEMINI_MODEL` | `gemini-3.8-flash` | The Gemini model. |
 
-We will be using the local Permit PDP for this project instead of the cloud PDP, as it enables implementing ReBAC authorization, which is not yet available in the cloud PDP.
+The `permit-mcp` settings are described in the
+[repository README](../../README.md#configuration). `PERMIT_MCP_USER` is not used: each
+session binds its own user.
 
-## Running the Project
-To run the project, first start the FastAPI server using the following command: 
+Then create the database and the matching objects in Permit:
 
 ```shell
-fastapi dev server.py
+uv run --env-file .env food-ordering-seed
 ```
 
-Next, run the CLI using the following command:
+It creates the four restaurants as `restaurants` instances, with their names and whether
+children may see them as attributes, and the four family members as users. Parents get
+`parent` and `_Reviewer_` on every restaurant; children get `child-can-view` on Pizza Palace
+and Burger Bonanza, the two restaurants open to children. Run again, it updates the
+attributes of the restaurants that exist to match the database, and assigns only the roles
+that are missing.
+
+## Run it
+
+Start the backend, which listens on `http://127.0.0.1:8000` (`--host` and `--port` change
+that):
 
 ```shell
-uv run client.py
+uv run --env-file .env food-ordering-server
 ```
 
-You can log in with the following username and password: 
+It exits with status 2 and names the variable when the configuration is incomplete.
 
-```python
-[
-    {"username": "joe", "password": 'joe_password',  "role": "parent"},
-    {"username": "jane", "password": 'jane_password', "role": "parent"},
-    {"username": "henry",  "password": 'henry_password', "role": "child"},
-    {"username": "rose",  "password": 'rose_password', "role": "child"},
-]
+In another terminal, start the chat and sign in:
 
+```shell
+uv run food-ordering-chat
 ```
+
+| Username | Password | Role |
+| --- | --- | --- |
+| `joe` | `joe_password` | parent |
+| `jane` | `jane_password` | parent |
+| `henry` | `henry_password` | child |
+| `rose` | `rose_password` | child |
+
+Try, as henry: "What can I eat at Pizza Palace?", "I want a pepperoni pizza", then, after
+a parent approved the request, the same order again. Ask for Sushi World's menu to file an
+access request. As joe: "Show me the pending requests" and "Approve it".
+
+## The tools
+
+| Tool | Parents | Children |
+| --- | --- | --- |
+| `list_resource_instances` | yes | yes |
+| `check_permission` | yes | no |
+| `create_access_request`, `create_operation_approval` | yes | yes |
+| `list_*`, `approve_*`, `deny_*`, `cancel_*` of both kinds | yes | no |
+| `list_dishes`, `order_dish` | yes | yes |
+
+Permit decides what each user may do: a child's server leaves the reviewer tools out so that
+the model does not offer them, and Permit refuses a review from someone without the reviewer
+role either way.
+
+## Tests
+
+The tests run offline. The Permit API and PDP are a local stand-in that the MCP tools and the
+Permit SDK both talk to, which answers as Permit does and records every request; the language
+model is a scripted stand-in.
+
+```shell
+uv run pytest
+uv run mypy
+uv run ruff check . && uv run ruff format --check .
+```
+
+They check that each tool acts as the session's user on the Permit wire, that a `user_id` or
+similar argument from the model changes nothing, that one approval allows one order, that
+the server does not start without `FOOD_ORDERING_JWT_SECRET`, and the sign-in and websocket
+authentication against a temporary database. ruff reads the repository root's configuration.

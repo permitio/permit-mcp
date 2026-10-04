@@ -1,0 +1,21 @@
+{
+  "operations": [
+    {
+      "deprecated": false,
+      "method": "POST",
+      "operationId": "is_allowed_allowed_post",
+      "parameters": [
+        {
+          "in": "header",
+          "name": "x-permit-sdk-language",
+          "required": false
+        }
+      ],
+      "path": "/allowed",
+      "requestBody": "Query",
+      "tags": [
+        "Authorization API"
+      ]
+    }
+  ]
+}
