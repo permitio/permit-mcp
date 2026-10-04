@@ -478,6 +478,247 @@ def test_the_method_must_match() -> None:
     assert inventory.match("GET", "/allowed") is None
 
 
+# --- stages ------------------------------------------------------------------------------
+
+
+def planted_operation(tags: list[str], *, deprecated: bool) -> api_coverage.Operation:
+    raw = {**read(CONTROL_PLANE)["operations"][0], "tags": tags, "deprecated": deprecated}
+    return api_coverage._operation("control-plane", raw, "planted")  # noqa: SLF001
+
+
+@pytest.mark.parametrize(
+    ("tags", "deprecated", "stage"),
+    [
+        (["API Keys"], False, "GA"),
+        (["Access Requests (EAP)"], False, "EAP"),
+        (["Facts", "Things (EAP)"], False, "EAP"),
+        (["Old"], True, "deprecated"),
+        (["Access Requests (EAP)"], True, "EAP"),
+        (["(EAP) Preview"], False, "GA"),
+        (["Things (eap)"], False, "GA"),
+        ([], False, "GA"),
+    ],
+    ids=[
+        "GA",
+        "EAP tag",
+        "any tag",
+        "deprecated",
+        "EAP before deprecated",
+        "EAP not at the end",
+        "lower case",
+        "no tags",
+    ],
+)
+def test_each_operation_has_one_stage(tags: list[str], *, deprecated: bool, stage: str) -> None:
+    assert planted_operation(tags, deprecated=deprecated).stage == stage
+
+
+def test_the_committed_scope_is_counted_per_stage(record: Path) -> None:
+    result = report(record)
+    assert result.returncode == 0, result.stdout
+    assert "| Control plane | GA | 2 | 2 | 0 | 0 | not run |" in result.stdout
+    assert "| Control plane | EAP | 21 | 10 | 0 | 11 | not run |" in result.stdout
+    assert "| PDP | GA | 1 | 1 | 0 | 0 | not run |" in result.stdout
+    assert "| deprecated |" not in result.stdout
+    assert operation_row(result.stdout, "Control plane", SCOPE)[3] == "GA"
+    assert operation_row(result.stdout, "Control plane", ("PUT", DENY_OA[4:]))[3] == "EAP"
+
+
+def test_a_deprecated_operation_has_a_stage_row_of_its_own(tmp_path: Path, record: Path) -> None:
+    document = read(CONTROL_PLANE)
+    for operation in document["operations"]:
+        if operation["path"] == SCOPE[1]:
+            operation["deprecated"] = True
+    result = report(record, control_plane=plant_inventory(tmp_path, "control-plane", document))
+    assert result.returncode == 0, result.stdout
+    assert "| Control plane | GA | 1 | 1 | 0 | 0 | not run |" in result.stdout
+    assert "| Control plane | deprecated | 1 | 1 | 0 | 0 | not run |" in result.stdout
+    assert operation_row(result.stdout, "Control plane", SCOPE)[3:5] == ["deprecated", "covered"]
+
+
+# --- the end-to-end column -----------------------------------------------------------------
+
+E2E_API = "https://api.permit.test"
+E2E_CLOUD_PDP = "https://cloudpdp.permit.test"
+E2E_CONTAINER_PDP = "http://127.0.0.1:41999"
+E2E_ORIGINS = {E2E_API: ["control-plane"], E2E_CLOUD_PDP: ["pdp"], E2E_CONTAINER_PDP: ["pdp"]}
+E2E_TEST = "tests/e2e/test_permit.py::test_x"
+AR_TEMPLATE = (
+    "/v2/facts/{proj_id}/{env_id}/access_requests/{elements_config_id}/user/{user_id}"
+    "/tenant/{tenant_id}"
+)
+OA_LIST = ("GET", OA_TEMPLATE)
+AR_CREATE = ("POST", AR_TEMPLATE)
+AR_APPROVE = ("PUT", f"{AR_TEMPLATE}/{{access_request_id}}/approve")
+OA_DENY = ("PUT", f"{OA_TEMPLATE}/{{operation_approval_id}}/deny")
+
+
+def operation_row(stdout: str, api: str, operation: tuple[str, str]) -> list[str]:
+    """The cells of an operation's row in the in-scope operations table."""
+    start = f"| {api} | `{operation[0]} {operation[1]}` |"
+    (found,) = [text for text in stdout.splitlines() if text.startswith(start)]
+    return [cell.strip() for cell in found.strip("|").split(" | ")]
+
+
+def operation_rows(stdout: str) -> list[list[str]]:
+    rows = [
+        text
+        for text in stdout.splitlines()
+        if text.startswith(("| Control plane | `", "| PDP | `"))
+    ]
+    return [[cell.strip() for cell in text.strip("|").split(" | ")] for text in rows]
+
+
+def e2e_line(method: str, path: str, status: int | None, origin: str = E2E_API) -> dict[str, Any]:
+    return line(method, path, E2E_TEST, status=status, origin=origin)
+
+
+def e2e_report(
+    tmp_path: Path,
+    lines: list[dict[str, Any]],
+    origins: object = E2E_ORIGINS,
+    record: list[dict[str, Any]] | None = None,
+) -> subprocess.CompletedProcess[str]:
+    """The report of the wire cases' offline record, with `lines` as the end-to-end record."""
+    offline = write_record(tmp_path / "record.jsonl", record or wire_record())
+    e2e = write_record(tmp_path / "e2e-record.jsonl", lines)
+    e2e_origins = write_json(tmp_path / "e2e-record.origins.json", origins)
+    return report(offline, extra=("--e2e-record", e2e, "--e2e-origins", e2e_origins))
+
+
+def test_without_an_end_to_end_record_the_column_says_not_run(record: Path) -> None:
+    result = report(record)
+    assert result.returncode == 0, result.stdout
+    assert "- End-to-end record: not run, so the end-to-end column says not run." in result.stdout
+    rows = operation_rows(result.stdout)
+    assert len(rows) == 24
+    assert {row[-1] for row in rows} == {"not run"}
+
+
+def test_an_end_to_end_record_fills_the_column(tmp_path: Path) -> None:
+    lines = [
+        e2e_line(*SCOPE, 200),
+        e2e_line("POST", AR, 201),
+        e2e_line("PUT", f"{AR}/{AR_ID}/approve", 403),
+        e2e_line("GET", OA, 302),
+        e2e_line("PUT", f"{OA}/{OA_ID}/deny", None),
+        e2e_line(*CHECK, 200, origin=E2E_CONTAINER_PDP),
+        e2e_line(*LOGIN, 200),
+        e2e_line("GET", f"{FACTS}/users", 200),
+    ]
+    result = e2e_report(tmp_path, lines)
+    assert result.returncode == 0, result.stdout
+    assert "::error" not in result.stdout
+    assert (
+        "- End-to-end record: 8 requests from 1 test; 6 requests got a 2xx or 3xx answer and count."
+    ) in result.stdout
+    column = {(row[0], row[1]): row[-1] for row in operation_rows(result.stdout)}
+    assert column[("Control plane", f"`{SCOPE[0]} {SCOPE[1]}`")] == "yes"
+    assert column[("Control plane", f"`{AR_CREATE[0]} {AR_CREATE[1]}`")] == "yes"
+    assert column[("Control plane", f"`{OA_LIST[0]} {OA_LIST[1]}`")] == "yes"
+    assert column[("PDP", "`POST /allowed`")] == "yes"
+    assert column[("Control plane", f"`{AR_APPROVE[0]} {AR_APPROVE[1]}`")] == "no"
+    assert column[("Control plane", f"`{OA_DENY[0]} {OA_DENY[1]}`")] == "no"
+    assert list(column.values()).count("yes") == 4
+    assert "not run" not in column.values()
+    assert "| Control plane | GA | 2 | 2 | 0 | 0 | 1 |" in result.stdout
+    assert "| Control plane | EAP | 21 | 10 | 0 | 11 | 2 |" in result.stdout
+    assert "| PDP | GA | 1 | 1 | 0 | 0 | 1 |" in result.stdout
+
+
+@pytest.mark.parametrize(
+    ("status", "exercised"),
+    [
+        (200, "yes"),
+        (204, "yes"),
+        (302, "yes"),
+        (399, "yes"),
+        (100, "no"),
+        (199, "no"),
+        (400, "no"),
+        (403, "no"),
+        (404, "no"),
+        (500, "no"),
+        (None, "no"),
+    ],
+)
+def test_only_a_2xx_or_3xx_end_to_end_answer_counts(
+    tmp_path: Path, status: int | None, exercised: str
+) -> None:
+    result = e2e_report(tmp_path, [e2e_line(*CHECK, status, origin=E2E_CLOUD_PDP)])
+    assert result.returncode == 0, result.stdout
+    assert operation_row(result.stdout, "PDP", CHECK)[-1] == exercised
+    assert f"| PDP | GA | 1 | 1 | 0 | 0 | {int(exercised == 'yes')} |" in result.stdout
+
+
+def test_an_end_to_end_request_counts_only_against_its_origin_s_apis(tmp_path: Path) -> None:
+    result = e2e_report(tmp_path, [e2e_line(*CHECK, 200, origin=E2E_API)])
+    assert result.returncode == 0, result.stdout
+    assert operation_row(result.stdout, "PDP", CHECK)[-1] == "no"
+
+
+def test_the_end_to_end_record_makes_no_finding_and_hides_none(tmp_path: Path) -> None:
+    offline = wire_record(skip="deny_operation_approval")
+    result = e2e_report(tmp_path, [e2e_line("PUT", f"{OA}/{OA_ID}/deny", 200)], record=offline)
+    assert result.returncode == 1
+    assert f"- `Control plane {DENY_OA}`: {UNEXPLAINED}" in result.stdout
+    assert operation_row(result.stdout, "Control plane", OA_DENY)[4:] == ["missing", "none", "yes"]
+
+
+@pytest.mark.parametrize(
+    ("args", "message"),
+    [
+        (("--e2e-record", "{e2e}"), "--e2e-record and --e2e-origins are given together"),
+        (("--e2e-origins", "{origins}"), "--e2e-record and --e2e-origins are given together"),
+        (
+            ("--e2e-record", "{empty}", "--e2e-origins", "{origins}"),
+            "the end-to-end record {empty} holds 0 requests, fewer than the minimum of 1",
+        ),
+        (
+            ("--e2e-record", "{absent}", "--e2e-origins", "{origins}"),
+            "could not read the end-to-end record",
+        ),
+        (
+            ("--e2e-record", "{malformed}", "--e2e-origins", "{origins}"),
+            "line 1 of the end-to-end record",
+        ),
+        (
+            ("--e2e-record", "{e2e}", "--e2e-origins", "{no_pdp}"),
+            "the end-to-end origins file {no_pdp} names no origin for the PDP",
+        ),
+        (
+            ("--e2e-record", "{e2e}", "--e2e-origins", "{absent}"),
+            "could not read the end-to-end origins file",
+        ),
+    ],
+    ids=[
+        "record alone",
+        "origins alone",
+        "empty record",
+        "missing record",
+        "malformed record",
+        "no PDP origin",
+        "missing origins",
+    ],
+)
+def test_an_unusable_end_to_end_input_exits_2(
+    tmp_path: Path, record: Path, args: tuple[str, ...], message: str
+) -> None:
+    paths = {
+        "e2e": write_record(tmp_path / "e2e.jsonl", [e2e_line(*SCOPE, 200)]),
+        "empty": write_record(tmp_path / "empty.jsonl", []),
+        "malformed": tmp_path / "malformed.jsonl",
+        "absent": tmp_path / "absent.json",
+        "origins": write_json(tmp_path / "e2e.origins.json", E2E_ORIGINS),
+        "no_pdp": write_json(tmp_path / "no-pdp.json", {E2E_API: ["control-plane"]}),
+    }
+    paths["malformed"].write_text("not json\n", encoding="utf-8")
+    result = report(record, extra=tuple(arg.format(**paths) for arg in args))
+    assert result.returncode == 2, result.stdout
+    assert message.format(**paths) in result.stdout
+    assert "The report did not run" in result.stdout
+
+
 # --- spec drift ---------------------------------------------------------------------------
 
 

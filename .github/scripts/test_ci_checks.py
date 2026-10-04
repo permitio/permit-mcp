@@ -28,7 +28,21 @@ import pytest
 
 from check_floors import floors
 from harness import REPO_ROOT, SCRIPTS, git, read_workflow, run_script, stand_in, tool
-from test_api_coverage import ORIGINS, as_openapi, wire_record
+from test_api_coverage import (
+    AR,
+    AR_CREATE,
+    CHECK,
+    E2E_API,
+    E2E_CONTAINER_PDP,
+    E2E_ORIGINS,
+    E2E_TEST,
+    ORIGINS,
+    SCOPE,
+    as_openapi,
+    line,
+    operation_row,
+    wire_record,
+)
 from test_workflows import NEEDED
 
 if TYPE_CHECKING:
@@ -436,6 +450,54 @@ def test_a_failed_spec_download_exits_2(tmp_path: Path) -> None:
     assert completed.returncode == 2
     assert "::error title=API coverage::Could not download" in completed.stdout
     assert not (tmp_path / "api-specs").exists()
+
+
+# --- ci-steps.sh e2e-coverage: the e2e job's report, with its end-to-end column ------------
+
+
+def e2e_coverage(
+    tmp_path: Path, e2e: list[dict[str, Any]] | None
+) -> tuple[subprocess.CompletedProcess[str], str]:
+    """Run the e2e job's report on the wire cases' record and `e2e`, the e2e record.
+
+    The planted curl fails: the e2e job's report reads only the committed inventories.
+    """
+    (tmp_path / "api-record.jsonl").write_text("".join(json.dumps(x) + "\n" for x in wire_record()))
+    (tmp_path / "api-record.origins.json").write_text(json.dumps(ORIGINS))
+    if e2e is not None:
+        (tmp_path / "e2e-record.jsonl").write_text("".join(json.dumps(x) + "\n" for x in e2e))
+        (tmp_path / "e2e-record.origins.json").write_text(json.dumps(E2E_ORIGINS))
+    stand_in(tmp_path, "curl", "exit 99")
+    python_uv(tmp_path)
+    summary = tmp_path / "summary.md"
+    env = {"GITHUB_STEP_SUMMARY": str(summary)}
+    completed = run_script(tmp_path, "ci-steps.sh", "e2e-coverage", env=env)
+    return completed, summary.read_text() if summary.exists() else ""
+
+
+def test_the_e2e_job_s_report_merges_the_end_to_end_record(tmp_path: Path) -> None:
+    e2e = [
+        line(*SCOPE, E2E_TEST, origin=E2E_API),
+        line(*CHECK, E2E_TEST, origin=E2E_CONTAINER_PDP),
+        line("POST", AR, E2E_TEST, status=403, origin=E2E_API),
+    ]
+    completed, summary = e2e_coverage(tmp_path, e2e)
+    assert completed.returncode == 0, completed.stdout + completed.stderr
+    assert "- Control plane: `.github/api-specs/control-plane.json`" in summary
+    assert "- PDP: `.github/api-specs/pdp.json`" in summary
+    assert "baseline" not in summary
+    assert "- End-to-end record: 3 requests from 1 test; 2 requests got a 2xx" in summary
+    assert operation_row(summary, "Control plane", SCOPE)[-1] == "yes"
+    assert operation_row(summary, "PDP", CHECK)[-1] == "yes"
+    assert operation_row(summary, "Control plane", AR_CREATE)[-1] == "no"
+    assert "| Control plane | EAP | 21 | 10 | 0 | 11 | 0 |" in summary
+
+
+def test_the_e2e_job_s_report_without_an_end_to_end_record_did_not_run(tmp_path: Path) -> None:
+    completed, summary = e2e_coverage(tmp_path, None)
+    assert completed.returncode == 2
+    assert "could not read the end-to-end record" in completed.stdout
+    assert ":warning: **The report did not run**" in summary
 
 
 # --- ci-steps.sh surface: the tool surface report -----------------------------------------

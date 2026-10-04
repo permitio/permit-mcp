@@ -26,6 +26,11 @@
 #       in-scope inventory to RUNNER_TEMP/api-specs, and reports against it with
 #       the committed one as the baseline. Exits 1 on a finding, and 2 when the
 #       report did not run.
+#   e2e-coverage  The e2e job's API coverage report: the offline record
+#       RUNNER_TEMP/api-record.jsonl with the end-to-end record
+#       RUNNER_TEMP/e2e-record.jsonl, each with its origins file beside it, against
+#       the committed inventories, so the end-to-end column is filled. Exits 1 on a
+#       finding, and 2 when the report did not run, as when the suite sent nothing.
 #   surface  Lists the changes to tests/snapshots/surface.json against HEAD^1,
 #       the base a pull request's merge commit merged (BASE_REF names it), in the
 #       job summary. Exits 0 with a warning on a breaking change, and 2 when the
@@ -178,6 +183,15 @@ coverage() {
     --summary "$GITHUB_STEP_SUMMARY"
 }
 
+e2e_coverage() {
+  require RUNNER_TEMP GITHUB_STEP_SUMMARY
+  run_script api_coverage.py report --spec control-plane=.github/api-specs/control-plane.json \
+    --spec pdp=.github/api-specs/pdp.json --allowlist .github/scripts/api_coverage_allowlist.json \
+    --record "$RUNNER_TEMP/api-record.jsonl" --origins "$RUNNER_TEMP/api-record.origins.json" \
+    --e2e-record "$RUNNER_TEMP/e2e-record.jsonl" \
+    --e2e-origins "$RUNNER_TEMP/e2e-record.origins.json" --summary "$GITHUB_STEP_SUMMARY"
+}
+
 surface() {
   require RUNNER_TEMP BASE_REF GITHUB_STEP_SUMMARY
   local snapshot=tests/snapshots/surface.json in_base report status=0
@@ -286,8 +300,10 @@ results() {
 
 case ${1:-} in
   needs | hooks | install | coverage | surface | smoke | mutation | results) "$@" ;;
+  e2e-coverage) e2e_coverage ;;
   *)
-    echo "usage: ci-steps.sh needs|hooks|install|coverage|surface|smoke|mutation|results" >&2
+    echo "usage: ci-steps.sh" \
+      "needs|hooks|install|coverage|e2e-coverage|surface|smoke|mutation|results" >&2
     exit 2
     ;;
 esac

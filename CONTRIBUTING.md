@@ -170,7 +170,7 @@ and manual runs a skipped `e2e` fails CI, since there it means the job's `if:` b
 | `mutation` | `.github/scripts/mutation_gate.py` on the package lines a pull request changes; fails when the tests catch fewer than 80% of the mutants |
 | `workflow-hardening` | actionlint, and zizmor with its online audits |
 | `gitleaks` | gitleaks on the whole history |
-| `e2e` | The end-to-end suite against Permit and a pinned PDP container (below), then a check that no test skipped, with the secrets of the `e2e` environment. Advisory: when it fails, CI passes and prints a warning. Scheduled and manual runs of CI only |
+| `e2e` | The end-to-end suite against Permit and a pinned PDP container (below), then a check that no test skipped, with the secrets of the `e2e` environment; then the API coverage report with its end-to-end column filled (below), and the suite's request record as the `e2e-api-record` artifact. Advisory: when it fails, CI passes and prints a warning. Scheduled and manual runs of CI only |
 
 CI's scheduled run each Monday, and a manual run, also post to Slack: the audit result, CI's
 result and the `e2e` result.
@@ -262,6 +262,28 @@ python .github/scripts/api_coverage.py report \
   --spec pdp=.github/api-specs/pdp.json \
   --allowlist .github/scripts/api_coverage_allowlist.json \
   --record /tmp/api-record.jsonl --origins /tmp/api-record.origins.json
+```
+
+Each in-scope operation has a stage: `EAP` when one of its tags ends in "(EAP)", otherwise
+`deprecated` when the spec marks it deprecated, otherwise `GA`. The report counts covered,
+untested and missing operations per API and stage, and lists each operation's stage.
+
+The "Exercised end to end" column says whether the end-to-end suite got a 2xx or 3xx answer
+from an operation. The suite records its requests the same way when `PERMIT_MCP_API_RECORD` is
+set; its fixtures declare the Permit API, the cloud PDP and the container PDP as origins. A 4xx
+or 5xx answer, or none, does not count, and the end-to-end record never makes a finding. Without
+`--e2e-record` and `--e2e-origins` the column says "not run", as in the `tests` job. The `e2e`
+job fills it: it records the suite to `e2e-record.jsonl`, runs the offline suite with a record
+of its own (the same tests from the same `uv.lock` as the `tests` job's locked leg, so the job
+does not wait for, or depend on, the tests matrix), runs `ci-steps.sh e2e-coverage` on both
+against the committed inventories, and uploads the end-to-end record and its origins file as
+the `e2e-api-record` artifact. To fill the column locally:
+
+```shell
+PERMIT_MCP_API_RECORD=/tmp/e2e-record.jsonl PERMIT_E2E_PROJECT_API_KEY=... \
+  PERMIT_E2E_PROJECT_ID=... uv run pytest -m e2e tests/e2e
+python .github/scripts/api_coverage.py report ...as above... \
+  --e2e-record /tmp/e2e-record.jsonl --e2e-origins /tmp/e2e-record.origins.json
 ```
 
 When a tool starts calling an operation outside the scope, add it to the scope in the allowlist

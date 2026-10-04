@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
-"""Report which Permit API and PDP operations the server's offline tests exercise.
+"""Report which Permit API and PDP operations the server's tests exercise.
 
 Usage:
   api_coverage.py report --spec control-plane=PATH --spec pdp=PATH --allowlist PATH
                          --record PATH --origins PATH [--baseline control-plane=PATH]
-                         [--summary PATH]
+                         [--e2e-record PATH --e2e-origins PATH] [--summary PATH]
   api_coverage.py snapshot API SPEC --allowlist PATH --source URL [--fetched DATE]
                            [--out-dir DIR]
 
@@ -33,6 +33,16 @@ Each in-scope operation is covered (a test got a response from it), untested (th
 calls it but no test sent it) or missing (no tool calls it). The last two come from the
 allowlist.
 
+Each in-scope operation also has a stage: EAP when one of its tags ends in "(EAP)",
+otherwise deprecated when the spec marks it so, otherwise GA. The report counts covered,
+untested and missing operations per API and stage.
+
+With --e2e-record and --e2e-origins, a record and origins file the end-to-end suite wrote
+in the same format, the report also says, for each in-scope operation, whether it was
+exercised end to end: whether a request of that record, matched as above, got a 2xx or
+3xx answer from it. An error answer or no answer does not count. Without them the column
+says "not run". The end-to-end record only fills the column: it never makes a finding.
+
 The report fails (exit 1) on a finding:
 
 * an in-scope operation no test sent, with no allowlist entry or an entry with no reason;
@@ -46,7 +56,8 @@ The report fails (exit 1) on a finding:
 Exit 2 means the report did not run, and is never a clean result: an inventory that
 cannot be read, is malformed or is empty, an allowlist that cannot be read or is
 malformed, a record that is missing, malformed or holds fewer requests than the
-minimum, an origins file that names no origin for an API, or any other error. The
+minimum, an origins file that names no origin for an API, an end-to-end record or origins
+file that is malformed or empty (or one given without the other), or any other error. The
 Markdown report goes to --summary (appended) or to stdout; each finding is also printed
 as a GitHub error annotation.
 
@@ -65,6 +76,7 @@ import re
 import sys
 import traceback
 from dataclasses import dataclass, field
+from http import HTTPStatus
 from pathlib import Path
 from typing import Any
 
@@ -82,12 +94,24 @@ UNTESTED = "untested"
 MISSING = "missing"
 ENTRY_STATUSES = (UNTESTED, MISSING)
 
+GA = "GA"
+EAP = "EAP"
+DEPRECATED = "deprecated"
+STAGES = (GA, EAP, DEPRECATED)
+EAP_TAG_SUFFIX = "(EAP)"
+# What the end-to-end column says for an operation, and for every one without a record.
+EXERCISED = "yes"
+NOT_EXERCISED = "no"
+NOT_RUN = "not run"
+
 # The fewest operations a downloaded spec must list, and the fewest requests a record
 # must hold: far below today's counts (263 control-plane operations, 1 PDP operation,
 # about 450 recorded requests), so they trip only on a truncated spec or a recorder that
 # stopped seeing requests.
 MIN_OPERATIONS = {CONTROL_PLANE: 200, PDP: 1}
 MIN_REQUESTS = 200
+# An end-to-end record with no request means the suite did not run.
+MIN_E2E_REQUESTS = 1
 
 HTTP_METHODS = ("get", "put", "post", "delete", "patch", "head", "options", "trace")
 PARAMETER = re.compile(r"\{[^/{}]*\}")
@@ -168,6 +192,15 @@ class Operation:
     def key(self) -> tuple[str, str, str]:
         """The operation's identity: API, method, and path without parameter names."""
         return (self.api, self.method, normalize(self.path))
+
+    @property
+    def stage(self) -> str:
+        """EAP when a tag ends in "(EAP)", else deprecated when the spec says so, else GA."""
+        if any(tag.endswith(EAP_TAG_SUFFIX) for tag in self.tags):
+            return EAP
+        if self.deprecated:
+            return DEPRECATED
+        return GA
 
 
 @dataclass
@@ -376,33 +409,50 @@ class Request:
 
 
 def load_record(path: Path) -> list[Request]:
-    """Read the request record tests/api_record.py wrote.
+    """Read the request record tests/api_record.py wrote during the offline tests.
 
     Raises:
         CoverageError: The record is missing, malformed, or holds fewer requests than the
             minimum.
 
     """
+    return _read_requests(path, "the request record", MIN_REQUESTS)
+
+
+def load_e2e_record(path: Path) -> list[Request]:
+    """Read the request record tests/api_record.py wrote during the end-to-end suite.
+
+    Raises:
+        CoverageError: The record is missing, malformed, or holds no request.
+
+    """
+    return _read_requests(path, "the end-to-end record", MIN_E2E_REQUESTS)
+
+
+def _read_requests(path: Path, label: str, minimum: int) -> list[Request]:
     try:
         lines = path.read_text(encoding="utf-8").splitlines()
     except OSError as exc:
-        msg = f"could not read the request record {path}: {exc}"
+        msg = f"could not read {label} {path}: {exc}"
         raise CoverageError(msg) from exc
     except UnicodeDecodeError as exc:
-        msg = f"the request record {path} is not UTF-8 text: {exc}"
+        msg = f"{label} {path} is not UTF-8 text: {exc}"
         raise CoverageError(msg) from exc
-    requests = [_request(path, number, text) for number, text in enumerate(lines, 1) if text]
-    if len(requests) < MIN_REQUESTS:
+    requests = [
+        _request(f"line {number} of {label} {path}", text)
+        for number, text in enumerate(lines, 1)
+        if text
+    ]
+    if len(requests) < minimum:
         msg = (
-            f"the request record {path} holds {len(requests)} requests, fewer than the "
-            f"minimum of {MIN_REQUESTS}; the recorder missed requests or the tests did not run"
+            f"{label} {path} holds {len(requests)} requests, fewer than the minimum of "
+            f"{minimum}; the recorder missed requests or the tests did not run"
         )
         raise CoverageError(msg)
     return requests
 
 
-def _request(path: Path, number: int, text: str) -> Request:
-    where = f"line {number} of the request record {path}"
+def _request(where: str, text: str) -> Request:
     try:
         line = json.loads(text)
     except json.JSONDecodeError as exc:
@@ -426,26 +476,43 @@ def _request(path: Path, number: int, text: str) -> Request:
     return Request(method.upper(), origin, request_path, status, test or OUTSIDE_A_TEST)
 
 
-def load_origins(path: Path) -> dict[str, tuple[str, ...]]:
-    """Read the origins file: each test server's origin and the APIs it serves.
+def load_origins(path: Path, label: str = "the origins file") -> dict[str, tuple[str, ...]]:
+    """Read an origins file: each server's origin and the APIs it serves.
 
     Raises:
         CoverageError: The file cannot be read, is malformed, names an unknown API, or
             names no origin for an API.
 
     """
-    document = read_json(path, "the origins file")
+    document = read_json(path, label)
     if not isinstance(document, dict) or not all(
         isinstance(apis, list) and apis and set(apis) <= set(APIS) for apis in document.values()
     ):
-        msg = f"the origins file {path} must map each origin to a list of {', '.join(APIS)}"
+        msg = f"{label} {path} must map each origin to a list of {', '.join(APIS)}"
         raise CoverageError(msg)
     origins = {str(origin): tuple(apis) for origin, apis in document.items()}
     for api in APIS:
         if not any(api in apis for apis in origins.values()):
-            msg = f"the origins file {path} names no origin for the {TITLES[api]}"
+            msg = f"{label} {path} names no origin for the {TITLES[api]}"
             raise CoverageError(msg)
     return origins
+
+
+@dataclass(frozen=True)
+class EndToEnd:
+    """What the end-to-end suite sent, and the APIs each of its origins serves."""
+
+    requests: list[Request]
+    origins: dict[str, tuple[str, ...]]
+
+    @property
+    def answered(self) -> list[Request]:
+        """The requests that got a 2xx or 3xx answer: the only ones that exercise anything."""
+        return [
+            r
+            for r in self.requests
+            if r.status is not None and HTTPStatus.OK <= r.status < HTTPStatus.BAD_REQUEST
+        ]
 
 
 # --- the allowlist -----------------------------------------------------------------
@@ -629,12 +696,16 @@ class Finding:
 
 @dataclass
 class Result:
-    """Where one in-scope operation stands."""
+    """Where one in-scope operation stands.
+
+    `e2e` says whether the end-to-end suite exercised it: yes, no, or not run.
+    """
 
     operation: Operation
     status: str
     tests: list[str]
     reason: str
+    e2e: str
 
 
 @dataclass
@@ -659,6 +730,7 @@ class Report:
     unanswered: int
     tests: int
     baselines: dict[str, Inventory]
+    e2e: EndToEnd | None
 
     @property
     def exit_code(self) -> int:
@@ -668,6 +740,10 @@ class Report:
     def count(self, api: str, status: str) -> int:
         """How many in-scope operations of `api` have `status`."""
         return sum(1 for r in self.results if r.operation.api == api and r.status == status)
+
+    def staged(self, api: str, stage: str) -> list[Result]:
+        """The results of the in-scope operations of `api` at `stage`."""
+        return [r for r in self.results if r.operation.api == api and r.operation.stage == stage]
 
 
 def _scope_findings(inventory: Inventory, scope: Scope) -> list[Finding]:
@@ -782,6 +858,7 @@ def _results(
     inventories: dict[str, Inventory],
     allowlist: Allowlist,
     sent: dict[tuple[str, str, str], set[str]],
+    exercised: set[tuple[str, str, str]] | None,
 ) -> tuple[list[Result], list[Finding]]:
     entries = {entry.key: entry for entry in allowlist.entries}
     results: list[Result] = []
@@ -792,15 +869,18 @@ def _results(
             label = f"{TITLES[api]} {operation.name}"
             tests = sorted(sent.get(operation.key, set()))
             entry = entries.pop(operation.key, None)
+            e2e = NOT_RUN
+            if exercised is not None:
+                e2e = EXERCISED if operation.key in exercised else NOT_EXERCISED
             if tests:
-                results.append(Result(operation, COVERED, tests, ""))
+                results.append(Result(operation, COVERED, tests, "", e2e))
                 if entry is not None:
                     findings.append(Finding("stale", label, f"allowlisted as {entry.status}"))
             elif entry is not None and entry.reason:
-                results.append(Result(operation, entry.status, [], entry.reason))
+                results.append(Result(operation, entry.status, [], entry.reason, e2e))
             else:
                 status = entry.status if entry is not None else MISSING
-                results.append(Result(operation, status, [], ""))
+                results.append(Result(operation, status, [], "", e2e))
                 findings.append(
                     Finding(
                         "unexplained", label, "no test sends it and the allowlist gives no reason"
@@ -849,12 +929,14 @@ def _params(operation: Operation) -> list[str]:
     ]
 
 
-def build_report(
+def build_report(  # noqa: PLR0913 - five inputs, and the optional e2e one keyword-only
     inventories: dict[str, Inventory],
     requests: list[Request],
     origins: dict[str, tuple[str, ...]],
     allowlist: Allowlist,
     baselines: dict[str, Inventory],
+    *,
+    e2e: EndToEnd | None = None,
 ) -> Report:
     """Compare the inventories with the record and the allowlist.
 
@@ -864,13 +946,18 @@ def build_report(
         origins: The APIs each origin serves.
         allowlist: The scope and the reasons.
         baselines: Inventories to check for drift against, by API.
+        e2e: What the end-to-end suite sent, for the end-to-end column; None when it
+            did not run.
 
     Returns:
         The report.
 
     """
     sent, unmatched = _sent(inventories, origins, requests)
-    results, findings = _results(inventories, allowlist, sent)
+    exercised = None
+    if e2e is not None:
+        exercised = set(_sent(inventories, e2e.origins, e2e.answered)[0])
+    results, findings = _results(inventories, allowlist, sent, exercised)
     sdk_only, sdk_findings = _sdk_only(unmatched, origins, allowlist.sdk_only)
     for api, baseline in baselines.items():
         findings += _drift(inventories[api], baseline)
@@ -884,6 +971,7 @@ def build_report(
         unanswered=sum(1 for request in requests if request.status is None),
         tests=len({request.test for request in requests}),
         baselines=baselines,
+        e2e=e2e,
     )
 
 
@@ -928,6 +1016,7 @@ def render(report: Report) -> str:
     record = f"{_plural(report.requests, 'request')} from {_plural(report.tests, 'test')}"
     unanswered = _plural(report.unanswered, "request")
     out.append(f"- Record: {record}; {unanswered} got no response and count for nothing.")
+    out.append(f"- End-to-end record: {_describe_e2e(report.e2e)}.")
     out.append("")
     statuses = (COVERED, UNTESTED, MISSING)
     out += [
@@ -937,6 +1026,18 @@ def render(report: Report) -> str:
     for api in report.inventories:
         counts = [report.count(api, status) for status in statuses]
         out.append(_row(TITLES[api], sum(counts), *counts))
+    out += ["", "### By stage", ""]
+    out += [
+        _row("API", "Stage", "In scope", *(s.capitalize() for s in statuses), "End to end"),
+        _row(*["---"] * 7),
+    ]
+    for api in report.inventories:
+        for stage in STAGES:
+            results = report.staged(api, stage)
+            if results:
+                counts = [sum(1 for r in results if r.status == s) for s in statuses]
+                e2e = NOT_RUN if report.e2e is None else sum(r.e2e == EXERCISED for r in results)
+                out.append(_row(TITLES[api], stage, len(results), *counts, e2e))
     out += ["", f"SDK-only requests: {len(report.sdk_only)}.", ""]
     out += [f"Out of scope: {_cell(report.out_of_scope_reason)}", ""]
     for kind, title in FINDING_TITLES.items():
@@ -947,8 +1048,16 @@ def render(report: Report) -> str:
             out.append("")
     out += ["### In-scope operations", ""]
     out += [
-        _row("API", "Operation", "operationId", "Status", "Tests or reason"),
-        _row(*["---"] * 5),
+        _row(
+            "API",
+            "Operation",
+            "operationId",
+            "Stage",
+            "Status",
+            "Tests or reason",
+            "Exercised end to end",
+        ),
+        _row(*["---"] * 7),
     ]
     for result in report.results:
         detail = (
@@ -959,8 +1068,10 @@ def render(report: Report) -> str:
                 TITLES[result.operation.api],
                 _code(result.operation.name),
                 _code(result.operation.operation_id),
+                result.operation.stage,
                 result.status,
                 detail,
+                result.e2e,
             )
         )
     if report.sdk_only:
@@ -971,6 +1082,17 @@ def render(report: Report) -> str:
         ]
     out.append("")
     return "\n".join(out)
+
+
+def _describe_e2e(e2e: EndToEnd | None) -> str:
+    if e2e is None:
+        return f"{NOT_RUN}, so the end-to-end column says {NOT_RUN}"
+    tests = len({request.test for request in e2e.requests})
+    answered = _plural(len(e2e.answered), "request")
+    return (
+        f"{_plural(len(e2e.requests), 'request')} from {_plural(tests, 'test')}; "
+        f"{answered} got a 2xx or 3xx answer and count"
+    )
 
 
 def _emit(text: str, summary: str | None) -> None:
@@ -1019,7 +1141,19 @@ def run(args: argparse.Namespace) -> Report:
     allowlist = load_allowlist(Path(args.allowlist))
     requests = load_record(Path(args.record))
     origins = load_origins(Path(args.origins))
-    return build_report(inventories, requests, origins, allowlist, baselines)
+    return build_report(inventories, requests, origins, allowlist, baselines, e2e=_end_to_end(args))
+
+
+def _end_to_end(args: argparse.Namespace) -> EndToEnd | None:
+    if args.e2e_record is None and args.e2e_origins is None:
+        return None
+    if args.e2e_record is None or args.e2e_origins is None:
+        msg = "--e2e-record and --e2e-origins are given together or not at all"
+        raise CoverageError(msg)
+    return EndToEnd(
+        load_e2e_record(Path(args.e2e_record)),
+        load_origins(Path(args.e2e_origins), "the end-to-end origins file"),
+    )
 
 
 def report_command(args: argparse.Namespace) -> int:
@@ -1104,6 +1238,8 @@ def parser() -> argparse.ArgumentParser:
         metavar="control-plane=PATH",
         help="an inventory the in-scope operations must not have drifted from",
     )
+    report.add_argument("--e2e-record", help="the end-to-end suite's request record")
+    report.add_argument("--e2e-origins", help="the APIs each origin of the e2e record serves")
     report.add_argument("--summary", help="append the Markdown report here, not to stdout")
     report.set_defaults(handler=report_command)
 

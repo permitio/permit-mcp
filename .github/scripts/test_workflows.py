@@ -197,11 +197,21 @@ ci.yml e2e
   End-to-end tests
     env PERMIT_E2E_PROJECT_API_KEY: ${{ secrets.PERMIT_E2E_PROJECT_API_KEY }}
     env PERMIT_E2E_PROJECT_ID: ${{ secrets.PERMIT_E2E_PROJECT_ID }}
+    env PERMIT_MCP_API_RECORD: ${{ runner.temp }}/e2e-record.jsonl
     run: python -m pytest -q -W error -m e2e -p no:cacheprovider
       --junitxml="$RUNNER_TEMP/junit.xml" tests/e2e
   Check that every test ran
     run: uv run --no-project --python 3.11 python .github/scripts/check_junit.py
       "$RUNNER_TEMP/junit.xml"
+  Offline tests, recorded for the coverage report
+    if: ${{ !cancelled() }}
+    env PERMIT_MCP_API_RECORD: ${{ runner.temp }}/api-record.jsonl
+    run: python -m pytest -q -W error
+  Report API coverage with the end-to-end record
+    if: ${{ !cancelled() }}
+    run: .github/scripts/ci-steps.sh e2e-coverage
+  actions/upload-artifact
+    if: ${{ !cancelled() }}
 ci.yml ci
   Check the needed jobs
     env NEEDS: ${{ toJSON(needs) }}
@@ -372,6 +382,35 @@ def test_each_action_is_pinned_to_one_commit_named_by_one_version() -> None:
                 assert match, f"{name}: {line.strip()} is not pinned as owner/repo@sha  # vX"
                 pins.setdefault(match[1], set()).add((match[2], match[3]))
     assert {action: len(pairs) for action, pairs in pins.items()} == dict.fromkeys(pins, 1)
+
+
+def origins_beside(record: str) -> str:
+    """The origins file tests/api_record.py writes beside `record`: `<stem>.origins.json`."""
+    directory, _, name = record.rpartition("/")
+    return f"{directory}/{name.removesuffix('.jsonl')}.origins.json"
+
+
+def test_the_e2e_job_s_report_reads_the_records_its_steps_write(
+    workflows: dict[str, dict[str, Any]],
+) -> None:
+    steps = {step_key(step): step for step in workflows["ci.yml"]["jobs"]["e2e"]["steps"]}
+    e2e = steps["End-to-end tests"]["env"]["PERMIT_MCP_API_RECORD"]
+    offline = steps["Offline tests, recorded for the coverage report"]["env"][
+        "PERMIT_MCP_API_RECORD"
+    ]
+    assert e2e == "${{ runner.temp }}/e2e-record.jsonl"
+    assert offline == "${{ runner.temp }}/api-record.jsonl"
+    script = (SCRIPTS / "ci-steps.sh").read_text()
+    (body,) = re.findall(r"^e2e_coverage\(\) \{\n(.*?)^\}", script, flags=re.MULTILINE | re.DOTALL)
+    for record in (e2e, offline):
+        for path in (record, origins_beside(record)):
+            assert path.replace("${{ runner.temp }}", '"$RUNNER_TEMP') + '"' in body, path
+    assert '--e2e-record "$RUNNER_TEMP/e2e-record.jsonl"' in body
+    assert "--baseline" not in body
+    upload = steps["actions/upload-artifact"]["with"]
+    assert upload["name"] == "e2e-api-record"
+    assert upload["path"].splitlines() == [e2e, origins_beside(e2e)]
+    assert "overwrite" not in upload
 
 
 def test_the_tests_matrix_covers_every_python_and_resolution(

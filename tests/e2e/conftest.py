@@ -7,6 +7,10 @@ lacks one of these, pytest exits 2 before any test starts, and so before any req
 container, saying the suite did not run: never a pass, and never a skip.
 
 When a test that used the container PDP fails, its report gets a section with the PDP's log.
+
+When PERMIT_MCP_API_RECORD is set, tests/api_record.py records the requests the server sends,
+and the fixtures declare the origins they talk to: the Permit API and the cloud PDP once the
+world is built, the container PDP once it is healthy.
 """
 
 from __future__ import annotations
@@ -17,6 +21,7 @@ from typing import TYPE_CHECKING
 
 import pytest
 
+from tests.api_record import CONTROL_PLANE, PDP, note_origin
 from tests.e2e.pdp import ContainerPdp, run_container_pdp
 from tests.e2e.scratch import (
     DEFAULT_API_URL,
@@ -96,6 +101,8 @@ def world(pytestconfig: pytest.Config) -> Iterator[ScratchWorld]:
     run_id = new_run_id(os.environ)
     project_id = os.environ["PERMIT_E2E_PROJECT_ID"].strip()
     with scratch_world(project, project_id, run_id, on_env_key=mask) as built:
+        note_origin(built.api_url, CONTROL_PLANE)
+        note_origin(built.settings().pdp_url, PDP)
         yield built
 
 
@@ -104,4 +111,5 @@ def container_pdp(world: ScratchWorld) -> Iterator[ContainerPdp]:
     """Run a PDP container for the scratch environment, removed before the environment is."""
     name = f"{world.environment_key}-pdp"
     with run_container_pdp(name, world.api_key, world.api_url) as started:
+        note_origin(started.url, PDP)
         yield started

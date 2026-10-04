@@ -553,7 +553,10 @@ jobs:
   # (CONTRIBUTING.md). It also runs check_permission against a PDP container,
   # pinned by digest in tests/e2e/pdp.py, which the test session starts with
   # docker once the scratch environment's key exists, and removes before the
-  # environment is deleted; a failed test that used it prints its log.
+  # environment is deleted; a failed test that used it prints its log. It
+  # records the requests the server sent, reports API coverage with an
+  # end-to-end column from them (ci-steps.sh e2e-coverage), and uploads the
+  # record as the e2e-api-record artifact.
   # Advisory: a Permit outage must not fail CI, which prints its failure as a
   # warning. It runs in CI's own scheduled and manual runs only,
   # never on a pull request: the secrets are the e2e environment's, which only
@@ -592,10 +595,14 @@ jobs:
         run: uv sync --locked
       # -m e2e selects the suite, which pyproject.toml's addopts deselects.
       # Exits 2 when a secret is missing, before any test or request.
+      # tests/api_record.py records each request the server sends, in the format
+      # of the tests job's record, and beside it the origins of the Permit API,
+      # the cloud PDP and the container PDP.
       - name: End-to-end tests
         env:
           PERMIT_E2E_PROJECT_API_KEY: ${{ secrets.PERMIT_E2E_PROJECT_API_KEY }}
           PERMIT_E2E_PROJECT_ID: ${{ secrets.PERMIT_E2E_PROJECT_ID }}
+          PERMIT_MCP_API_RECORD: ${{ runner.temp }}/e2e-record.jsonl
         run: >-
           python -m pytest -q -W error -m e2e -p no:cacheprovider
           --junitxml="$RUNNER_TEMP/junit.xml" tests/e2e
@@ -603,6 +610,31 @@ jobs:
         run: >-
           uv run --no-project --python 3.11 python .github/scripts/check_junit.py
           "$RUNNER_TEMP/junit.xml"
+      # The API coverage report with its end-to-end column filled: which in-scope
+      # operations answered the suite above with a 2xx or 3xx. The offline record
+      # it also needs is written here, by the offline suite as the tests job's
+      # locked leg runs it (same uv.lock, same Python), rather than downloaded
+      # from that leg: this job then neither waits for the tests matrix nor is
+      # skipped when a leg of it fails. Both run after a failed suite too, so the
+      # column shows what the suite reached; a suite that sent nothing makes the
+      # report exit 2.
+      - name: Offline tests, recorded for the coverage report
+        if: ${{ !cancelled() }}
+        env:
+          PERMIT_MCP_API_RECORD: ${{ runner.temp }}/api-record.jsonl
+        run: python -m pytest -q -W error
+      - name: Report API coverage with the end-to-end record
+        if: ${{ !cancelled() }}
+        run: .github/scripts/ci-steps.sh e2e-coverage
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
+        if: ${{ !cancelled() }}
+        with:
+          name: e2e-api-record
+          path: |
+            ${{ runner.temp }}/e2e-record.jsonl
+            ${{ runner.temp }}/e2e-record.origins.json
+          retention-days: 30
+          if-no-files-found: warn
 
   # The one check to require. It runs whatever happened to the jobs it needs,
   # since GitHub counts a skipped required check as passing, and fails unless
