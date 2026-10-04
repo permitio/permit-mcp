@@ -30,6 +30,7 @@ from tests.e2e.scratch import (
     PollTimeoutError,
     SweepError,
     mask_in_actions,
+    new_run_id,
     poll,
     scratch_world,
 )
@@ -368,3 +369,27 @@ def test_a_selected_e2e_run_without_credentials_exits_2_and_says_it_did_not_run(
     assert f"The end-to-end suite did not run: set {missing} (" in output
     assert re.search(r"\b(passed|skipped|failed|error)\b", output) is None, output
     assert PROJECT_KEY not in output
+
+
+@pytest.mark.parametrize(
+    ("environ", "run_id"),
+    [
+        ({"GITHUB_RUN_ID": "17", "GITHUB_RUN_ATTEMPT": "2", "GITHUB_JOB": "e2e"}, "17-2-e2e"),
+        (
+            {"GITHUB_RUN_ID": "17", "GITHUB_RUN_ATTEMPT": "2", "GITHUB_JOB": "e2e-pdp-latest"},
+            "17-2-e2e-pdp-latest",
+        ),
+        ({"GITHUB_RUN_ID": "17", "GITHUB_RUN_ATTEMPT": "2"}, None),
+        ({}, None),
+    ],
+    ids=["e2e job", "latest PDP job", "no job", "local"],
+)
+def test_ci_s_two_e2e_jobs_get_run_ids_of_their_own(
+    environ: dict[str, str], run_id: str | None
+) -> None:
+    found = new_run_id(environ)
+    if run_id is None:
+        assert re.fullmatch(r"local-[0-9a-f]{8}", found)
+        assert new_run_id(environ) != found
+    else:
+        assert found == run_id

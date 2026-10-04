@@ -9,6 +9,7 @@ that the container is removed whatever happens, and that its log is shown on fai
 
 from __future__ import annotations
 
+import ast
 import json
 import os
 import re
@@ -25,11 +26,15 @@ import pytest
 from tests.e2e.conftest import PDP_LOG_SECTION, pytest_runtest_makereport
 from tests.e2e.pdp import (
     HEALTH_PATH,
+    OPENAPI_PATH,
     PDP_IMAGE,
+    PDP_IMAGE_ENV,
     ContainerPdp,
     ContainerPdpError,
     docker,
     is_healthy,
+    pdp_image,
+    published_spec,
     run_container_pdp,
     wait_until_healthy,
     without_health_checks,
@@ -42,6 +47,7 @@ if TYPE_CHECKING:
     from pytest_httpserver import HTTPServer
 
 ROOT = Path(__file__).resolve().parent.parent
+E2E_TESTS = ROOT / "tests" / "e2e" / "test_permit.py"
 ENV_KEY = "permit_key_PDPSECRET222"
 NAME = "mcp-e2e-7-1-pdp"
 CONTROL_PLANE = "https://api.example.test"
@@ -164,6 +170,67 @@ def closed_port_url() -> str:
 
 def test_the_image_is_pinned_by_version_and_digest() -> None:
     assert re.fullmatch(r"permitio/pdp-v2:v?\d+\.\d+\.\d+@sha256:[0-9a-f]{64}", PDP_IMAGE)
+
+
+@pytest.mark.parametrize(
+    ("environ", "image"),
+    [
+        ({}, PDP_IMAGE),
+        ({PDP_IMAGE_ENV: "  "}, PDP_IMAGE),
+        ({PDP_IMAGE_ENV: " permitio/pdp-v2:latest\n"}, "permitio/pdp-v2:latest"),
+    ],
+    ids=["unset", "blank", "set"],
+)
+def test_the_pinned_image_runs_unless_a_run_names_another(
+    environ: dict[str, str], image: str
+) -> None:
+    assert pdp_image(environ) == image
+
+
+def test_the_pdp_runs_the_image_it_is_given(
+    fake_docker: FakeDocker, healthy_pdp: HTTPServer
+) -> None:
+    with run_container_pdp(NAME, ENV_KEY, CONTROL_PLANE, image="permitio/pdp-v2:latest"):
+        pass
+    assert fake_docker.calls() == [[*RUN[:-1], "permitio/pdp-v2:latest"], PORT, REMOVE]
+    assert [request.path for request, _ in healthy_pdp.log] == [HEALTH_PATH]
+
+
+def test_every_test_that_uses_the_container_pdp_is_selected_by_its_name() -> None:
+    # CI's e2e-pdp-latest job runs `-k container_pdp`: the container tests and only them.
+    tree = ast.parse(E2E_TESTS.read_text(encoding="utf-8"))
+    tests = [
+        node
+        for node in tree.body
+        if isinstance(node, ast.FunctionDef | ast.AsyncFunctionDef)
+        and node.name.startswith("test_")
+    ]
+    uses = {test.name for test in tests if "container_pdp" in [a.arg for a in test.args.args]}
+    named = {test.name for test in tests if "container_pdp" in test.name}
+    assert uses == named
+    assert len(uses) == 3
+
+
+def test_the_published_spec_is_read_without_a_proxy(
+    httpserver: HTTPServer, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("http_proxy", closed_port_url())
+    httpserver.expect_request(OPENAPI_PATH, method="GET").respond_with_data('{"paths": {}}')
+    assert published_spec(base_url(httpserver)) == b'{"paths": {}}'
+    assert [request.headers.get("Authorization") for request, _ in httpserver.log] == [None]
+
+
+def test_a_published_spec_that_is_not_200_fails(httpserver: HTTPServer) -> None:
+    httpserver.expect_request(OPENAPI_PATH).respond_with_data("down", status=503)
+    url = base_url(httpserver)
+    with pytest.raises(ContainerPdpError, match=f"The PDP at {url} answered 503 on /openapi.json"):
+        published_spec(url)
+
+
+def test_a_published_spec_that_does_not_arrive_fails() -> None:
+    url = closed_port_url()
+    with pytest.raises(ContainerPdpError, match=f"The PDP at {url} did not answer on /openapi"):
+        published_spec(url)
 
 
 def test_the_pdp_runs_with_the_key_by_name_only_and_is_removed_after_the_block(

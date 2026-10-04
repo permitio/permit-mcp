@@ -9,7 +9,10 @@ PDP after a policy sync, so those checks poll, bounded by elapsed time.
 
 The last tests send check_permission to a PDP container instead, pinned by digest and run for
 the session (tests/e2e/pdp.py), with users of their own, so the cloud PDP's tests decide none
-of their answers. They poll the same way.
+of their answers. They poll the same way. The last test compares the OpenAPI document the
+container publishes with the committed PDP inventory, .github/api-specs/pdp.json. Every test
+that uses the container has `container_pdp` in its name: CI's e2e-pdp-latest job selects them
+with `-k container_pdp`, and tests/test_e2e_pdp.py checks the names.
 
 The texts are legal but hostile: reasons in several scripts, and a 4096-character reviewer
 comment (no maximum is documented; the API stores it as text), each compared with what
@@ -19,13 +22,18 @@ Permit returns.
 from __future__ import annotations
 
 import dataclasses
+import os
+import subprocess
+import sys
 from contextlib import asynccontextmanager
+from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 import pytest
 from mcp.client import Client
 
 from permit_mcp import bound_user, create_server
+from tests.e2e.pdp import pdp_image, published_spec
 from tests.e2e.scratch import (
     EDITOR,
     OA_APPROVED_ROLE,
@@ -48,6 +56,10 @@ if TYPE_CHECKING:
 
 pytestmark = pytest.mark.e2e
 
+ROOT = Path(__file__).resolve().parents[2]
+API_COVERAGE = ROOT / ".github" / "scripts" / "api_coverage.py"
+PDP_INVENTORY = ROOT / ".github" / "api-specs" / "pdp.json"
+ALLOWLIST = ROOT / ".github" / "scripts" / "api_coverage_allowlist.json"
 # A PDP, the cloud's or a container, applies a role assignment after a policy sync.
 PDP_SYNC_TIMEOUT_SECONDS = 120.0
 REASON = 'Need to edit «Q3 report» — für Prüfung ✅ 日本語 עברית "quoted" <b>&amp;</b> \\ end'
@@ -466,3 +478,30 @@ async def test_rbac_edit_on_the_type_is_allowed_by_the_container_pdp_after_appro
         )
         assert await allowed(bystander, "read") is True
         assert await allowed(bystander, "edit") is False
+
+
+def test_the_container_pdp_publishes_the_committed_pdp_inventory(
+    container_pdp: ContainerPdp, tmp_path: Path
+) -> None:
+    spec = tmp_path / "pdp-openapi.json"
+    spec.write_bytes(published_spec(container_pdp.url))
+    compared = subprocess.run(  # noqa: S603 - this interpreter, the repository's own script
+        [
+            sys.executable,
+            str(API_COVERAGE),
+            "compare",
+            "pdp",
+            str(spec),
+            "--inventory",
+            str(PDP_INVENTORY),
+            "--allowlist",
+            str(ALLOWLIST),
+        ],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert compared.returncode == 0, (
+        f"{pdp_image(os.environ)} publishes a POST /allowed other than the committed "
+        f"inventory's:\n{compared.stdout}{compared.stderr}"
+    )

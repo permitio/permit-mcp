@@ -1,4 +1,4 @@
 {
-  "fetched": "2026-10-03",
-  "source": "https://github.com/permitio/PDP/blob/c8edea7912ed32d89fb60396b401d03832a84129/horizon/enforcer/api.py"
+  "fetched": "2026-10-04",
+  "source": "permitio/pdp-v2:v0.9.15@sha256:720031733fc918f053a5d4e72225324d246cbc72136ff62180cbee8f491af44e"
 }

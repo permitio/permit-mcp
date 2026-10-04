@@ -9,7 +9,9 @@ uv run --only-dev pytest -c .github/scripts/pytest.ini .github/scripts/test_api_
 
 from __future__ import annotations
 
+import ast
 import json
+import re
 import subprocess
 import sys
 from collections.abc import Callable
@@ -29,6 +31,7 @@ SPECS = SCRIPTS.parent / "api-specs"
 CONTROL_PLANE = SPECS / "control-plane.json"
 PDP = SPECS / "pdp.json"
 ALLOWLIST = SCRIPTS / "api_coverage_allowlist.json"
+PDP_MODULE = SCRIPTS.parents[1] / "tests" / "e2e" / "pdp.py"
 
 sys.path.insert(0, str(SCRIPTS))
 
@@ -249,6 +252,31 @@ def test_the_committed_inventories_are_what_snapshot_writes() -> None:
             "tags": ["Authorization API"],
         }
     ]
+
+
+def pinned_pdp_image() -> str:
+    """`PDP_IMAGE` in tests/e2e/pdp.py, the image the e2e suite runs, read without importing."""
+    tree = ast.parse(PDP_MODULE.read_text(encoding="utf-8"))
+    (value,) = [
+        node.value
+        for node in tree.body
+        if isinstance(node, ast.Assign)
+        and [getattr(target, "id", None) for target in node.targets] == ["PDP_IMAGE"]
+    ]
+    image = ast.literal_eval(value)
+    assert isinstance(image, str)
+    return image
+
+
+def test_the_pdp_inventory_s_source_is_the_pinned_image_and_digest() -> None:
+    source = read(api_coverage.source_file(PDP))["source"]
+    image = pinned_pdp_image()
+    digest = re.compile(r"\Apermitio/pdp-v2:[^@/]+@(sha256:[0-9a-f]{64})\Z")
+    pinned, named = digest.match(image), digest.match(source)
+    assert pinned is not None, image
+    assert named is not None, f"pdp.source.json names no pdp-v2 image by digest: {source}"
+    assert named[1] == pinned[1], "move the pin in pdp.source.json and tests/e2e/pdp.py together"
+    assert source == image
 
 
 # --- the gate fails --------------------------------------------------------------------
@@ -1287,3 +1315,169 @@ def test_snapshot_with_an_unusable_allowlist_exits_2(tmp_path: Path) -> None:
     result = snapshot(spec, tmp_path / "absent.json", tmp_path / "out")
     assert result.returncode == 2
     assert "could not read the allowlist" in result.stdout
+
+
+# --- compare: a published spec against a committed inventory ------------------------------
+
+
+def pdp_openapi(edit: Edit = lambda _: None) -> dict[str, Any]:
+    """A planted PDP document shaped as the FastAPI one pdp-v2 publishes, after `edit`.
+
+    Its `POST /allowed` is horizon's: the optional SDK-language header, and a body that is
+    a union of the v2 and v1 queries, which FastAPI titles after the argument, "Query".
+    """
+    query = {"type": "object", "properties": {"user": {"type": "string"}}}
+    document: dict[str, Any] = {
+        "openapi": "3.1.0",
+        "info": {"title": "Permit.io PDP API", "version": "0.9.15"},
+        "paths": {
+            "/allowed": {
+                "post": {
+                    "tags": ["Authorization API"],
+                    "summary": "Is Allowed",
+                    "operationId": "is_allowed_allowed_post",
+                    "parameters": [
+                        {
+                            "name": "x-permit-sdk-language",
+                            "in": "header",
+                            "schema": {"anyOf": [{"type": "string"}, {"type": "null"}]},
+                        }
+                    ],
+                    "requestBody": {
+                        "required": True,
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "anyOf": [
+                                        {"$ref": "#/components/schemas/AuthorizationQuery"},
+                                        {"$ref": "#/components/schemas/AuthorizationQueryV1"},
+                                    ],
+                                    "title": "Query",
+                                }
+                            }
+                        },
+                    },
+                    "responses": {"200": {"description": "Successful Response"}},
+                    "security": [{"PDP token": []}],
+                }
+            },
+            "/allowed/bulk": {
+                "post": {"tags": ["Authorization API"], "operationId": "bulk_allowed"}
+            },
+            "/healthy": {"get": {"tags": ["Health API"], "operationId": "healthy_get"}},
+        },
+        "components": {"schemas": {"AuthorizationQuery": query, "AuthorizationQueryV1": query}},
+    }
+    edit(document)
+    return document
+
+
+def allowed_post(document: dict[str, Any]) -> dict[str, Any]:
+    operation: dict[str, Any] = document["paths"]["/allowed"]["post"]
+    return operation
+
+
+def compare(spec: Path, inventory: Path = PDP) -> subprocess.CompletedProcess[str]:
+    return run("compare", "pdp", spec, "--inventory", inventory, "--allowlist", ALLOWLIST)
+
+
+def test_the_committed_pdp_inventory_matches_the_pdp_s_published_shape(tmp_path: Path) -> None:
+    spec = write_json(tmp_path / "pdp-openapi.json", pdp_openapi())
+    result = compare(spec)
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert result.stdout == f"{spec} matches {PDP}: 1 in-scope operation.\n"
+
+
+@pytest.mark.parametrize(
+    ("edit", "difference"),
+    [
+        (
+            lambda d: allowed_post(d)["parameters"].append(
+                {"name": "debug", "in": "query", "required": True}
+            ),
+            (
+                "parameters ['header x-permit-sdk-language'] -> "
+                "['header x-permit-sdk-language', 'query debug (required)']"
+            ),
+        ),
+        (
+            lambda d: allowed_post(d)["parameters"][0].update(required=True),
+            (
+                "parameters ['header x-permit-sdk-language'] -> "
+                "['header x-permit-sdk-language (required)']"
+            ),
+        ),
+        (
+            lambda d: allowed_post(d)["requestBody"]["content"]["application/json"].update(
+                schema={"$ref": "#/components/schemas/AuthorizationQuery"}
+            ),
+            "requestBody 'Query' -> '#/components/schemas/AuthorizationQuery'",
+        ),
+        (lambda d: allowed_post(d).pop("requestBody"), "requestBody 'Query' -> None"),
+        (
+            lambda d: allowed_post(d).update(operationId="allowed"),
+            "operationId 'is_allowed_allowed_post' -> 'allowed'",
+        ),
+        (lambda d: allowed_post(d).update(deprecated=True), "deprecated False -> True"),
+        (
+            lambda d: d["paths"]["/allowed"].update(get=d["paths"]["/allowed"].pop("post")),
+            "removed since the snapshot",
+        ),
+    ],
+    ids=[
+        "parameter added",
+        "header now required",
+        "body changed",
+        "body dropped",
+        "operationId",
+        "deprecated",
+        "operation gone",
+    ],
+)
+def test_a_published_spec_that_differs_fails_with_a_diff(
+    tmp_path: Path, edit: Edit, difference: str
+) -> None:
+    spec = write_json(tmp_path / "pdp-openapi.json", pdp_openapi(edit))
+    result = compare(spec)
+    assert result.returncode == 1, result.stdout + result.stderr
+    lines = result.stdout.splitlines()
+    assert lines[0].startswith(f"{spec} differs from {PDP}, the committed PDP inventory (")
+    assert lines[1] == f"- PDP POST /allowed: {difference}"
+    assert f"--- {PDP}" in lines
+    assert f"+++ {spec}, in scope" in lines
+    assert any(text.startswith(("-  ", "+  ")) for text in lines)
+    assert lines[-1].startswith(f"::error title=API spec comparison::{spec} differs from the")
+
+
+def test_a_spec_that_adds_an_in_scope_operation_differs(
+    tmp_path: Path, allowlist: dict[str, Any]
+) -> None:
+    allowlist["scope"]["pdp"]["operations"].append("GET /healthy")
+    planted = write_json(tmp_path / "allowlist.json", allowlist)
+    spec = write_json(tmp_path / "pdp-openapi.json", pdp_openapi())
+    result = run("compare", "pdp", spec, "--inventory", PDP, "--allowlist", planted)
+    assert result.returncode == 1
+    assert "- PDP GET /healthy: added since the snapshot" in result.stdout
+
+
+@pytest.mark.parametrize(
+    ("plant", "message"),
+    [
+        (lambda tmp: tmp / "absent.json", "could not read the PDP spec"),
+        (lambda tmp: write_json(tmp / "s.json", {"openapi": "3.1.0"}), "has no `paths` object"),
+        (lambda tmp: write_json(tmp / "s.json", {"paths": {}}), "lists 0 operations, fewer"),
+    ],
+    ids=["missing", "no paths", "empty"],
+)
+def test_an_unusable_published_spec_exits_2(tmp_path: Path, plant: Plant, message: str) -> None:
+    result = compare(plant(tmp_path))
+    assert result.returncode == 2
+    assert result.stdout.startswith("::error title=API spec comparison::")
+    assert message in result.stdout
+
+
+def test_comparing_with_an_unusable_inventory_exits_2(tmp_path: Path) -> None:
+    spec = write_json(tmp_path / "pdp-openapi.json", pdp_openapi())
+    result = compare(spec, inventory=tmp_path / "absent.json")
+    assert result.returncode == 2
+    assert "could not read the PDP inventory" in result.stdout

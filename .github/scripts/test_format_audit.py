@@ -365,6 +365,40 @@ def test_slack_leaves_out_the_e2e_line_without_a_result() -> None:
     assert "e2e" not in out
 
 
+@pytest.mark.parametrize(
+    ("result", "line"),
+    [
+        ("success", ">e2e, latest PDP: success"),
+        ("failure", ">e2e, latest PDP: failure (did not run, or a test failed)"),
+        ("skipped", ">e2e, latest PDP: skipped (did not run)"),
+    ],
+)
+def test_slack_carries_the_latest_pdp_leg_s_result_apart_from_e2e_s(
+    tmp_path: Path, result: str, line: str
+) -> None:
+    out = render_slack(
+        [],
+        [],
+        repo="o/r",
+        run_url="",
+        ci_result="success",
+        e2e_result="success",
+        e2e_pdp_latest_result=result,
+    )
+    assert out.split("\n")[-4:] == [">CI: success", ">e2e: success", line, ">See the workflow run."]
+    cli = audit(
+        tmp_path,
+        write(tmp_path, "floor", clean_report()),
+        "--slack",
+        "--e2e-result",
+        "success",
+        "--e2e-pdp-latest-result",
+        result,
+    )
+    assert cli.returncode == 0, cli.stderr
+    assert cli.stdout.split("\n")[-4:-2] == [">e2e: success", line]
+
+
 def test_slack_says_the_audit_did_not_complete(tmp_path: Path) -> None:
     result = audit(tmp_path, "absent", "--slack", "--repo", "o/r")
     assert result.returncode == 0

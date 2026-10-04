@@ -2,7 +2,8 @@
 
 The suite runs only when selected (`-m e2e`; pyproject.toml's addopts deselects it
 otherwise) and needs PERMIT_E2E_PROJECT_API_KEY and PERMIT_E2E_PROJECT_ID, and optionally
-PERMIT_E2E_API_URL. The container PDP's tests also need docker on PATH. When a selected run
+PERMIT_E2E_API_URL, and PERMIT_E2E_PDP_IMAGE to run a PDP image other than the pinned one.
+The container PDP's tests also need docker on PATH. When a selected run
 lacks one of these, pytest exits 2 before any test starts, and so before any request or
 container, saying the suite did not run: never a pass, and never a skip.
 
@@ -22,7 +23,7 @@ from typing import TYPE_CHECKING
 import pytest
 
 from tests.api_record import CONTROL_PLANE, PDP, note_origin
-from tests.e2e.pdp import ContainerPdp, run_container_pdp
+from tests.e2e.pdp import ContainerPdp, pdp_image, run_container_pdp
 from tests.e2e.scratch import (
     DEFAULT_API_URL,
     AdminClient,
@@ -108,8 +109,12 @@ def world(pytestconfig: pytest.Config) -> Iterator[ScratchWorld]:
 
 @pytest.fixture(scope="session")
 def container_pdp(world: ScratchWorld) -> Iterator[ContainerPdp]:
-    """Run a PDP container for the scratch environment, removed before the environment is."""
+    """Run a PDP container for the scratch environment, removed before the environment is.
+
+    The image is the pinned one unless PERMIT_E2E_PDP_IMAGE names another.
+    """
     name = f"{world.environment_key}-pdp"
-    with run_container_pdp(name, world.api_key, world.api_url) as started:
+    image = pdp_image(os.environ)
+    with run_container_pdp(name, world.api_key, world.api_url, image=image) as started:
         note_origin(started.url, PDP)
         yield started

@@ -6,13 +6,20 @@ removes it before the world's environment is deleted.
 
 `run_container_pdp` runs `PDP_IMAGE`, pinned by version and by the digest of that version's
 multi-arch image index, so a new PDP release cannot change what the suite runs against.
-Docker pulls by the digest; the tag only names it. The key reaches the container through
-docker's environment (`--env PDP_API_KEY`, the name alone), never its command line. The
-port is published on 127.0.0.1 only, at a port docker picks. The PDP answers 503 on
-`/healthy` until it has its first policy and data, so the block starts once it answers 200,
-waiting at most `HEALTH_TIMEOUT_SECONDS` of elapsed time. Whatever happens, the container is
-removed when the block ends. Every error and log it returns is scrubbed of registered
-secrets, and its log is shown without the health-check noise.
+Docker pulls by the digest; the tag only names it. PERMIT_E2E_PDP_IMAGE names another image
+for a run (`pdp_image`): CI's advisory e2e-pdp-latest job runs `permitio/pdp-v2:latest`.
+.github/api-specs/pdp.source.json names the pinned image too, as the source of the PDP
+inventory; .github/scripts/test_api_coverage.py fails when the two differ. The key reaches
+the container through docker's environment (`--env PDP_API_KEY`, the name alone), never its
+command line. The port is published on 127.0.0.1 only, at a port docker picks. The PDP
+answers 503 on `/healthy` until it has its first policy and data, so the block starts once
+it answers 200, waiting at most `HEALTH_TIMEOUT_SECONDS` of elapsed time. Whatever happens,
+the container is removed when the block ends. Every error and log it returns is scrubbed of
+registered secrets, and its log is shown without the health-check noise.
+
+`published_spec` reads the OpenAPI document a running PDP publishes at `OPENAPI_PATH`, which
+needs no token: pdp-v2's server answers it by proxying its horizon service's FastAPI
+document.
 """
 
 from __future__ import annotations
@@ -35,13 +42,16 @@ if TYPE_CHECKING:
 _LOG = get_logger(__name__)
 
 # To move the pin, take a pdp-v2 release at least 7 days old, and its `digest` from
-# https://hub.docker.com/v2/repositories/permitio/pdp-v2/tags/<tag>.
+# https://hub.docker.com/v2/repositories/permitio/pdp-v2/tags/<tag>, and change it here and
+# in .github/api-specs/pdp.source.json (CONTRIBUTING.md).
 PDP_IMAGE = (
     "permitio/pdp-v2:v0.9.15"
     "@sha256:720031733fc918f053a5d4e72225324d246cbc72136ff62180cbee8f491af44e"
 )
+PDP_IMAGE_ENV = "PERMIT_E2E_PDP_IMAGE"
 PDP_PORT = 7000
 HEALTH_PATH = "/healthy"
+OPENAPI_PATH = "/openapi.json"
 # The PDP is healthy once the environment's first policy bundle and data arrive, which
 # has taken 63 to 154 seconds in other SDKs' CI.
 HEALTH_TIMEOUT_SECONDS = 300.0
@@ -159,6 +169,32 @@ def is_healthy(url: str, timeout: float = PROBE_TIMEOUT_SECONDS) -> bool:
         return False
 
 
+def pdp_image(environ: Mapping[str, str]) -> str:
+    """Return the image to run: PERMIT_E2E_PDP_IMAGE when set and not blank, else the pin."""
+    return environ.get(PDP_IMAGE_ENV, "").strip() or PDP_IMAGE
+
+
+def published_spec(url: str, timeout: float = PROBE_TIMEOUT_SECONDS) -> bytes:
+    """Return the OpenAPI document the PDP at `url` publishes, asked without a proxy.
+
+    Raises:
+        ContainerPdpError: The PDP did not answer 200.
+
+    """
+    opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+    try:
+        with opener.open(f"{url}{OPENAPI_PATH}", timeout=timeout) as response:
+            body: bytes = response.read()
+    except urllib.error.HTTPError as error:
+        error.close()
+        msg = f"The PDP at {url} answered {error.code} on {OPENAPI_PATH}"
+        raise ContainerPdpError(msg) from error
+    except (urllib.error.URLError, TimeoutError, ConnectionError) as error:
+        msg = f"The PDP at {url} did not answer on {OPENAPI_PATH}: {error}"
+        raise ContainerPdpError(msg) from error
+    return body
+
+
 def wait_until_healthy(
     pdp: ContainerPdp,
     *,
@@ -204,14 +240,16 @@ def run_container_pdp(
     api_key: str,
     control_plane: str,
     *,
+    image: str = PDP_IMAGE,
     health_within: float = HEALTH_TIMEOUT_SECONDS,
 ) -> Iterator[ContainerPdp]:
-    """Run `PDP_IMAGE` for one environment, wait until it is healthy, yield it, remove it.
+    """Run a PDP image for one environment, wait until it is healthy, yield it, remove it.
 
     Args:
         name: The container's name, unique to the run.
         api_key: The environment's API key; registered for redaction.
         control_plane: The Permit API the PDP fetches its policy from.
+        image: The image to run; the pinned `PDP_IMAGE` unless a run names another.
         health_within: Seconds of elapsed time the PDP has to become healthy.
 
     Yields:
@@ -237,12 +275,12 @@ def run_container_pdp(
             "PDP_API_KEY",
             "--env",
             f"PDP_CONTROL_PLANE={control_plane}",
-            PDP_IMAGE,
+            image,
             secrets={"PDP_API_KEY": api_key},
         )
         pdp = ContainerPdp(name=name, url=_published_url(name))
         seconds = wait_until_healthy(pdp, within=health_within)
-        _LOG.info("The container PDP %s was healthy after %.0f seconds", name, seconds)
+        _LOG.info("The container PDP %s (%s) was healthy after %.0f seconds", name, image, seconds)
         yield pdp
     except BaseException as failure:
         _remove_after_failure(name, failure)

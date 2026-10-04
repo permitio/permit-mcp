@@ -150,12 +150,13 @@ release, a repository owner must:
 
 ## What CI runs
 
-The `CI` check passes only when every job below succeeded, apart from the advisory `e2e`.
-`dependency-review` and `mutation` run on pull requests only; on other events CI accepts them
-as skipped, with a notice. `e2e` runs in CI's scheduled and manual runs only; elsewhere,
-including the run a release calls, CI accepts it as skipped, with a notice. In CI's scheduled
-and manual runs a skipped `e2e` fails CI, since there it means the job's `if:` broke; a failed
-`e2e` is a warning only.
+The `CI` check passes only when every job below succeeded, apart from the advisory `e2e` and
+`e2e-pdp-latest`. `dependency-review` and `mutation` run on pull requests only; on other events
+CI accepts them as skipped, with a notice. `e2e` and `e2e-pdp-latest` run in CI's scheduled and
+manual runs only; elsewhere, including the run a release calls, CI accepts them as skipped,
+with a notice. In CI's scheduled and manual runs a skipped `e2e` or `e2e-pdp-latest` fails CI,
+since there it means the job's `if:` broke; a failed one is a warning only, printed for each
+job apart.
 
 | Job | What it runs |
 | --- | --- |
@@ -171,9 +172,10 @@ and manual runs a skipped `e2e` fails CI, since there it means the job's `if:` b
 | `workflow-hardening` | actionlint, and zizmor with its online audits |
 | `gitleaks` | gitleaks on the whole history |
 | `e2e` | The end-to-end suite against Permit and a pinned PDP container (below), then a check that no test skipped, with the secrets of the `e2e` environment; then the API coverage report with its end-to-end column filled (below), and the suite's request record as the `e2e-api-record` artifact. Advisory: when it fails, CI passes and prints a warning. Scheduled and manual runs of CI only |
+| `e2e-pdp-latest` | The container PDP's tests (`-m e2e -k container_pdp`) against `permitio/pdp-v2:latest` instead of the pinned image (`PERMIT_E2E_PDP_IMAGE`), then a check that no test skipped, with the same secrets. It shows a PDP release that breaks them, or changes `POST /allowed` in its spec, before the pin moves. A job of its own, so CI and Slack report its result apart from `e2e`'s; it waits for `e2e` (one concurrency group). Advisory, scheduled and manual runs of CI only |
 
 CI's scheduled run each Monday, and a manual run, also post to Slack: the audit result, CI's
-result and the `e2e` result.
+result, and the `e2e` and `e2e-pdp-latest` results, each on its own line.
 
 ### End-to-end tests
 
@@ -199,6 +201,10 @@ PERMIT_E2E_PROJECT_API_KEY=permit_key_... PERMIT_E2E_PROJECT_ID=<project id or k
   under an hour, so it never deletes one in use.
 - `PERMIT_E2E_API_URL` points the suite at another Permit API; the default is
   `https://api.permit.io`, and the container PDP fetches its policy from it too.
+- `PERMIT_E2E_PDP_IMAGE` runs another PDP image than the pinned one, as the
+  `e2e-pdp-latest` job does with `permitio/pdp-v2:latest`. Every test that uses the container
+  PDP has `container_pdp` in its name, so `-k container_pdp` selects them;
+  `tests/test_e2e_pdp.py` checks that.
 - With either variable unset, or docker not on `PATH`, `pytest -m e2e` exits 2 before any test
   starts, and before any request or container, saying the suite did not run.
 - In the environment, the suite builds a `document` resource type with one instance, six
@@ -211,25 +217,34 @@ PERMIT_E2E_PROJECT_API_KEY=permit_key_... PERMIT_E2E_PROJECT_ID=<project id or k
   of that version's multi-arch image index, so a new PDP release does not change what the
   suite runs against:
   `permitio/pdp-v2:v0.9.15@sha256:720031733fc918f053a5d4e72225324d246cbc72136ff62180cbee8f491af44e`.
-  To move the pin, take a release at least 7 days old and the `digest` of its tag from
-  `https://hub.docker.com/v2/repositories/permitio/pdp-v2/tags/<tag>`, and change both.
-  Once the world is built, the session runs it with the scratch environment's key (handed to
-  docker in its environment, never on its command line), published on `127.0.0.1` at a port
-  docker picks, and waits up to 5 minutes for it to answer 200 on `/healthy`. It removes the
-  container before it deletes the environment, after a failure too. When the PDP does not get
-  healthy, or a test that used it fails, the run prints the PDP's log, without its health
-  checks. A run killed before its teardown leaves the container `mcp-e2e-<run id>-pdp`
-  running; remove it with `docker rm --force`. The helpers are tested offline, with a
-  stand-in docker, in `tests/test_e2e_pdp.py`.
+  `.github/api-specs/pdp.source.json` names the same image as the source of the PDP
+  inventory, and `.github/scripts/test_api_coverage.py` fails when the two differ. To move the
+  pin, see [moving the PDP pin](#moving-the-pdp-pin). Once the world is built, the session
+  runs it with the scratch environment's key (handed to docker in its environment, never on its
+  command line), published on `127.0.0.1` at a port docker picks, and waits up to 5 minutes
+  for it to answer 200 on `/healthy`. It removes the container before it deletes the
+  environment, after a failure too. When the PDP does not get healthy, or a test that used it
+  fails, the run prints the PDP's log, without its health checks. A run killed before its
+  teardown leaves the container `mcp-e2e-<run id>-pdp` running; remove it with
+  `docker rm --force`. The helpers are tested offline, with a stand-in docker, in
+  `tests/test_e2e_pdp.py`.
+- The last container test reads the OpenAPI document the running container publishes at
+  `/openapi.json` (pdp-v2 serves it without a token, from its horizon service) and runs
+  `api_coverage.py compare pdp` on it: the document's in-scope operation, `POST /allowed`,
+  must match `.github/api-specs/pdp.json` in every field the inventory keeps (operationId,
+  tags, deprecated flag, parameters and request body). When they differ it fails with each
+  difference and a unified diff of the two inventories.
 - The world's setup retries a 429 after its Retry-After, and the tests retry a tool call
   Permit answered with 429. The server itself never retries. Waits for the PDP are bounded by
   elapsed time.
 
-In CI the `e2e` job reads the two variables from the secrets of the `e2e` GitHub environment,
-which only `main` may deploy to (see [Repository setup](#repository-setup)), so a workflow
-pushed on any other branch never receives them. Pull requests never run it: their code would
-run with the project's key. Runs wait for each other, so one project is never used by two runs at a
-time. The scratch environment's API key is masked in the log as soon as it is read.
+In CI the `e2e` and `e2e-pdp-latest` jobs read the two variables from the secrets of the `e2e`
+GitHub environment, which only `main` may deploy to (see [Repository setup](#repository-setup)),
+so a workflow pushed on any other branch never receives them. Pull requests never run them:
+their code would run with the project's key. Runs and the two jobs wait for each other, so one
+project is never used by two runs at a time; in CI the run id in the environment's key is the
+workflow run's id, attempt and job. The scratch environment's API key is masked in the log as
+soon as it is read.
 
 ### API coverage report
 
@@ -311,9 +326,51 @@ python .github/scripts/api_coverage.py snapshot control-plane /tmp/openapi.json 
 `snapshot` refuses a spec with fewer operations than its minimum, and writes
 `.github/api-specs/control-plane.json` and `control-plane.source.json` (the URL and the date).
 Rerun it whenever the scope in the allowlist changes. The PDP inventory (`pdp.json`) holds
-`POST /allowed`, taken from the PDP's source at the commit its `.source.json` names; no CI run
-downloads it. To refresh it, write the PDP's `/openapi.json` to a file and run `snapshot pdp` on
-it with that source.
+`POST /allowed` as the pinned PDP image publishes it; its `.source.json` names that image by
+version and digest. No CI run rewrites it: the e2e suite compares it with the running pinned
+container's `/openapi.json` (see [end-to-end tests](#end-to-end-tests)).
+
+#### Moving the PDP pin
+
+The pin is in two files, which must name the same image: `PDP_IMAGE` in `tests/e2e/pdp.py`, and
+`source` in `.github/api-specs/pdp.source.json`, beside the inventory taken from that image.
+
+1. Take a pdp-v2 release at least 7 days old, and the `digest` of its tag from
+   `https://hub.docker.com/v2/repositories/permitio/pdp-v2/tags/<tag>`. The pin is
+   `permitio/pdp-v2:<tag>@<digest>`.
+2. Set `PDP_IMAGE` to it.
+3. Write the inventory from that image's own document. The PDP serves `/openapi.json` once it
+   runs with an environment's API key; run it locally with a key of an environment kept for
+   tests, then snapshot what it publishes, with the pin as the source:
+
+   ```shell
+   PDP_API_KEY=permit_key_... docker run --rm --detach --name pdp-pin --env PDP_API_KEY \
+     --publish 127.0.0.1:7766:7000 permitio/pdp-v2:<tag>@<digest>
+   until curl --fail --silent --output /dev/null http://127.0.0.1:7766/healthy; do sleep 5; done
+   curl --fail --silent --show-error --output /tmp/pdp-openapi.json \
+     http://127.0.0.1:7766/openapi.json
+   docker rm --force pdp-pin
+   python .github/scripts/api_coverage.py snapshot pdp /tmp/pdp-openapi.json \
+     --allowlist .github/scripts/api_coverage_allowlist.json \
+     --source permitio/pdp-v2:<tag>@<digest>
+   ```
+
+   `snapshot` writes `pdp.json` and `pdp.source.json`. To check the committed inventory
+   against a document without rewriting it:
+
+   ```shell
+   python .github/scripts/api_coverage.py compare pdp /tmp/pdp-openapi.json \
+     --inventory .github/api-specs/pdp.json \
+     --allowlist .github/scripts/api_coverage_allowlist.json
+   ```
+
+4. Run the CI script tests (`test_api_coverage.py` checks that the two files name one image)
+   and the e2e suite, and commit `tests/e2e/pdp.py`, `pdp.json` and `pdp.source.json`
+   together. When the new inventory changes `POST /allowed`, check that `permit_api.py` still
+   sends what it accepts.
+
+The weekly `e2e-pdp-latest` job runs the same comparison against `permitio/pdp-v2:latest`, so
+a change to `POST /allowed` in a newer release shows there first.
 
 ### Adding a CI job
 

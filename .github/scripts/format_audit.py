@@ -11,7 +11,8 @@ when it lists as many packages as the tree pins. The modes:
   hold, so the summary is written even when a report is broken; it says so.
 * --annotations: one `::error` workflow command per blocking advisory.
 * --slack: the Slack message text, with the CI result when --ci-result is given,
-  and the e2e suite's when --e2e-result is given.
+  the e2e suite's when --e2e-result is given, and its latest-PDP leg's when
+  --e2e-pdp-latest-result is given.
 * --gate: exits 0 when no fixable HIGH or CRITICAL advisory is present, 1 when
   one is, and 2 when a report is missing, unreadable, scanned nothing or
   scanned other than the tree's packages, so a scan that did not complete
@@ -303,9 +304,9 @@ def _slack_findings(findings: list[Finding], repo: str) -> list[str]:
     return lines
 
 
-def _e2e_line(result: str) -> str:
-    """The e2e job's result; anything but success also says the suite did not run."""
-    line = f">e2e: {_slack_escape(result)}"
+def _e2e_line(job: str, result: str) -> str:
+    """An e2e job's result; anything but success also says the suite did not run."""
+    line = f">{job}: {_slack_escape(result)}"
     if result == "success":
         return line
     return f"{line} ({E2E_NOT_RUN.get(result, 'did not run')})"
@@ -319,6 +320,7 @@ def render_slack(  # noqa: PLR0913 - the message's parts, keyword-only past the 
     run_url: str,
     ci_result: str,
     e2e_result: str = "",
+    e2e_pdp_latest_result: str = "",
 ) -> str:
     """The Slack message: the findings themselves, not only a verdict."""
     if errors:
@@ -331,7 +333,9 @@ def render_slack(  # noqa: PLR0913 - the message's parts, keyword-only past the 
     if ci_result:
         lines.append(f">CI: {_slack_escape(ci_result)}")
     if e2e_result:
-        lines.append(_e2e_line(e2e_result))
+        lines.append(_e2e_line("e2e", e2e_result))
+    if e2e_pdp_latest_result:
+        lines.append(_e2e_line("e2e, latest PDP", e2e_pdp_latest_result))
     lines.append(f"><{run_url}|View the run>" if run_url else ">See the workflow run.")
     return "\n".join(lines)
 
@@ -425,6 +429,9 @@ def main() -> int:
     parser.add_argument("--run-url", default="", help="workflow run URL, for the Slack message")
     parser.add_argument("--ci-result", default="", help="the CI job's result, for Slack")
     parser.add_argument("--e2e-result", default="", help="the e2e job's result, for Slack")
+    parser.add_argument(
+        "--e2e-pdp-latest-result", default="", help="the e2e-pdp-latest job's result, for Slack"
+    )
     args = parser.parse_args()
 
     findings, errors = load_reports(args.dir, args.trees)
@@ -454,6 +461,7 @@ def main() -> int:
                 run_url=args.run_url,
                 ci_result=args.ci_result,
                 e2e_result=args.e2e_result,
+                e2e_pdp_latest_result=args.e2e_pdp_latest_result,
             )
         )
         return 0

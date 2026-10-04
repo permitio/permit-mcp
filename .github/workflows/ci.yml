@@ -553,8 +553,10 @@ jobs:
   # (CONTRIBUTING.md). It also runs check_permission against a PDP container,
   # pinned by digest in tests/e2e/pdp.py, which the test session starts with
   # docker once the scratch environment's key exists, and removes before the
-  # environment is deleted; a failed test that used it prints its log. It
-  # records the requests the server sent, reports API coverage with an
+  # environment is deleted; a failed test that used it prints its log. A test
+  # compares the OpenAPI document that container publishes with the committed
+  # .github/api-specs/pdp.json, and fails with a diff when POST /allowed
+  # differs. It records the requests the server sent, reports API coverage with an
   # end-to-end column from them (ci-steps.sh e2e-coverage), and uploads the
   # record as the e2e-api-record artifact.
   # Advisory: a Permit outage must not fail CI, which prints its failure as a
@@ -636,12 +638,61 @@ jobs:
           retention-days: 30
           if-no-files-found: warn
 
+  # The container PDP's tests (-k container_pdp: check_permission after an
+  # approval, and the comparison of the PDP's published spec with
+  # .github/api-specs/pdp.json) against permitio/pdp-v2:latest instead of the
+  # pinned image (PERMIT_E2E_PDP_IMAGE), so a PDP release that breaks them shows
+  # before the pin moves. A job of its own, not a matrix leg of e2e, so CI's
+  # results and the Slack message report it apart from the pinned run. Advisory
+  # and run when e2e runs, as e2e is, with the same secrets, and in the same
+  # concurrency group, so the two never use the project at the same time; its
+  # scratch environment's key names the job (GITHUB_JOB), so it never meets the
+  # e2e job's.
+  e2e-pdp-latest:
+    name: e2e-pdp-latest
+    if: >-
+      github.workflow == 'CI' &&
+      (github.event_name == 'schedule' || github.event_name == 'workflow_dispatch')
+    environment: e2e
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    permissions:
+      contents: read
+    concurrency:
+      group: ${{ github.repository }}-permit-e2e-project
+      cancel-in-progress: false
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7  # v10.2.0
+        with:
+          version-file: uv.lock
+          python-version: "3.13"
+          activate-environment: true
+          enable-cache: false
+      - name: Install from uv.lock
+        run: uv sync --locked
+      - name: Container PDP tests against the latest PDP
+        env:
+          PERMIT_E2E_PROJECT_API_KEY: ${{ secrets.PERMIT_E2E_PROJECT_API_KEY }}
+          PERMIT_E2E_PROJECT_ID: ${{ secrets.PERMIT_E2E_PROJECT_ID }}
+          PERMIT_E2E_PDP_IMAGE: permitio/pdp-v2:latest
+        run: >-
+          python -m pytest -q -W error -m e2e -k container_pdp -p no:cacheprovider
+          --junitxml="$RUNNER_TEMP/junit.xml" tests/e2e
+      - name: Check that every test ran
+        run: >-
+          uv run --no-project --python 3.11 python .github/scripts/check_junit.py
+          "$RUNNER_TEMP/junit.xml"
+
   # The one check to require. It runs whatever happened to the jobs it needs,
   # since GitHub counts a skipped required check as passing, and fails unless
   # each of them succeeded: a failed, cancelled or skipped job fails it, with
   # three exceptions. The jobs in PULL_REQUEST_JOBS (dependency-review and
   # mutation) run on pull requests only, so on any other event each is skipped,
-  # and that passes with a notice. The jobs in SCHEDULED_JOBS (e2e) run in CI's
+  # and that passes with a notice. The jobs in SCHEDULED_JOBS (e2e and
+  # e2e-pdp-latest) run in CI's
   # own scheduled and manual runs only, so anywhere else, a run release.yml
   # calls included, a skip passes with a notice. In CI's own scheduled and
   # manual runs a skip fails CI, even for an advisory job: there it means the
@@ -659,6 +710,7 @@ jobs:
       - dependency-review
       - docs
       - e2e
+      - e2e-pdp-latest
       - example
       - gitleaks
       - mutation
@@ -684,23 +736,24 @@ jobs:
         env:
           NEEDS: ${{ toJSON(needs) }}
           EVENT: ${{ github.event_name }}
-          EXPECTED_JOBS: 12
-          ADVISORY_JOBS: e2e
+          EXPECTED_JOBS: 13
+          ADVISORY_JOBS: e2e e2e-pdp-latest
           PULL_REQUEST_JOBS: dependency-review mutation
-          SCHEDULED_JOBS: e2e
+          SCHEDULED_JOBS: e2e e2e-pdp-latest
           WORKFLOW: ${{ github.workflow }}
         run: .github/scripts/ci-steps.sh results
 
   # Posts one Slack message on scheduled and manual runs, when no pull request
   # reads the result: the audit's findings, or that it did not complete, CI's
-  # result, and the e2e suite's result, which CI treats as advisory. A called
+  # result, and the results of the e2e suite and of its latest-PDP leg, which CI
+  # treats as advisory. A called
   # run never notifies: its github.workflow is the caller's name, not CI.
   # Without SLACK_WEBHOOK_URL the job warns and passes. The message is rendered
   # from the audit's artifact by the tested format_audit.py, and toJSON quotes
   # it into the payload, so advisory text cannot break out of it.
   notify:
     name: notify
-    needs: [audit, ci, e2e]
+    needs: [audit, ci, e2e, e2e-pdp-latest]
     if: >-
       always() && github.workflow == 'CI' &&
       (github.event_name == 'schedule' || github.event_name == 'workflow_dispatch')
@@ -746,6 +799,7 @@ jobs:
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
           CI_RESULT: ${{ needs.ci.result }}
           E2E_RESULT: ${{ needs.e2e.result }}
+          E2E_PDP_LATEST_RESULT: ${{ needs.e2e-pdp-latest.result }}
         run: .github/scripts/audit-report.sh slack
       - uses: slackapi/slack-github-action@dcb1066f776dd043e64d0e8ba94ca15cc7e1875d  # v4.0.0
         if: env.SLACK_WEBHOOK_URL != ''

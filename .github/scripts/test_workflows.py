@@ -33,6 +33,7 @@ NEEDED = [
     "dependency-review",
     "docs",
     "e2e",
+    "e2e-pdp-latest",
     "example",
     "gitleaks",
     "mutation",
@@ -60,8 +61,9 @@ JOBS: dict[str, tuple[list[str], dict[str, tuple[Any, ...]]]] = {
             "workflow-hardening": (None, None, 10, {}),
             "gitleaks": (None, None, 10, {"fetch-depth": 0}),
             "e2e": (OWN_RUN, None, 25, {}),
+            "e2e-pdp-latest": (OWN_RUN, None, 25, {}),
             "ci": ("always()", NEEDED, 5, {}),
-            "notify": (f"always() && {OWN_RUN}", ["audit", "ci", "e2e"], 5, {}),
+            "notify": (f"always() && {OWN_RUN}", ["audit", "ci", "e2e", "e2e-pdp-latest"], 5, {}),
         },
     ),
     "release.yml": (
@@ -212,14 +214,26 @@ ci.yml e2e
     run: .github/scripts/ci-steps.sh e2e-coverage
   actions/upload-artifact
     if: ${{ !cancelled() }}
+ci.yml e2e-pdp-latest
+  Install from uv.lock
+    run: uv sync --locked
+  Container PDP tests against the latest PDP
+    env PERMIT_E2E_PROJECT_API_KEY: ${{ secrets.PERMIT_E2E_PROJECT_API_KEY }}
+    env PERMIT_E2E_PROJECT_ID: ${{ secrets.PERMIT_E2E_PROJECT_ID }}
+    env PERMIT_E2E_PDP_IMAGE: permitio/pdp-v2:latest
+    run: python -m pytest -q -W error -m e2e -k container_pdp -p no:cacheprovider
+      --junitxml="$RUNNER_TEMP/junit.xml" tests/e2e
+  Check that every test ran
+    run: uv run --no-project --python 3.11 python .github/scripts/check_junit.py
+      "$RUNNER_TEMP/junit.xml"
 ci.yml ci
   Check the needed jobs
     env NEEDS: ${{ toJSON(needs) }}
     env EVENT: ${{ github.event_name }}
-    env EXPECTED_JOBS: 12
-    env ADVISORY_JOBS: e2e
+    env EXPECTED_JOBS: 13
+    env ADVISORY_JOBS: e2e e2e-pdp-latest
     env PULL_REQUEST_JOBS: dependency-review mutation
-    env SCHEDULED_JOBS: e2e
+    env SCHEDULED_JOBS: e2e e2e-pdp-latest
     env WORKFLOW: ${{ github.workflow }}
     run: .github/scripts/ci-steps.sh results
 ci.yml notify
@@ -240,6 +254,7 @@ ci.yml notify
       github.run_id }}
     env CI_RESULT: ${{ needs.ci.result }}
     env E2E_RESULT: ${{ needs.e2e.result }}
+    env E2E_PDP_LATEST_RESULT: ${{ needs.e2e-pdp-latest.result }}
     run: .github/scripts/audit-report.sh slack
   slackapi/slack-github-action
     if: env.SLACK_WEBHOOK_URL != ''
@@ -300,6 +315,7 @@ CONCURRENCY: dict[tuple[str, str], tuple[str, str | bool] | None] = {
     ("ci.yml", "dependency-review"): (f"{REF_GROUP}-dependency-review", PR_CANCELS),
     ("ci.yml", "mutation"): (f"{REF_GROUP}-mutation", PR_CANCELS),
     ("ci.yml", "e2e"): ("${{ github.repository }}-permit-e2e-project", False),
+    ("ci.yml", "e2e-pdp-latest"): ("${{ github.repository }}-permit-e2e-project", False),
     ("ci.yml", "notify"): (f"{REF_GROUP}-notify-${{{{ github.run_id }}}}", False),
     ("release.yml", "*"): (REF_GROUP, False),
     ("pages.yml", "deploy"): ("pages", False),
@@ -411,6 +427,33 @@ def test_the_e2e_job_s_report_reads_the_records_its_steps_write(
     assert upload["name"] == "e2e-api-record"
     assert upload["path"].splitlines() == [e2e, origins_beside(e2e)]
     assert "overwrite" not in upload
+
+
+def test_the_latest_pdp_leg_runs_the_container_tests_on_latest_and_reports_apart(
+    workflows: dict[str, dict[str, Any]],
+) -> None:
+    jobs = workflows["ci.yml"]["jobs"]
+    pinned, latest = jobs["e2e"], jobs["e2e-pdp-latest"]
+    image_env = [
+        step["env"].get("PERMIT_E2E_PDP_IMAGE")
+        for job in (pinned, latest)
+        for step in job["steps"]
+        if "env" in step and "PERMIT_E2E_PROJECT_API_KEY" in step["env"]
+    ]
+    # The pinned job runs tests/e2e/pdp.py's PDP_IMAGE; only the latest leg names another.
+    assert image_env == [None, "permitio/pdp-v2:latest"]
+    (run,) = [
+        step["run"] for step in latest["steps"] if "PERMIT_E2E_PDP_IMAGE" in step.get("env", {})
+    ]
+    assert " -m e2e -k container_pdp " in run
+    for key in ("if", "environment", "concurrency", "timeout-minutes", "permissions"):
+        assert latest[key] == pinned[key], key
+    # Separate jobs, not one matrix job, so each has its own result in needs.
+    assert "strategy" not in pinned
+    assert "strategy" not in latest
+    ci_env = next(s for s in jobs["ci"]["steps"] if s.get("name") == "Check the needed jobs")["env"]
+    for name in ("ADVISORY_JOBS", "SCHEDULED_JOBS"):
+        assert ci_env[name].split() == ["e2e", "e2e-pdp-latest"], name
 
 
 def test_the_tests_matrix_covers_every_python_and_resolution(

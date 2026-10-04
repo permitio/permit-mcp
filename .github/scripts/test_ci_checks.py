@@ -50,9 +50,9 @@ if TYPE_CHECKING:
 
 CI_ENV = {
     "EXPECTED_JOBS": str(len(NEEDED)),
-    "ADVISORY_JOBS": "e2e",
+    "ADVISORY_JOBS": "e2e e2e-pdp-latest",
     "PULL_REQUEST_JOBS": "dependency-review mutation",
-    "SCHEDULED_JOBS": "e2e",
+    "SCHEDULED_JOBS": "e2e e2e-pdp-latest",
 }
 TREES = ["runtime-ceiling", "runtime-floor", "dev-ceiling", "docs-ceiling", "example-ceiling"]
 
@@ -128,18 +128,21 @@ def results(overrides: dict[str, str], jobs: list[str] = NEEDED) -> str:
     )
 
 
-def own_run(event: str) -> str:
+def own_run(event: str, job: str = "e2e") -> str:
     return (
-        f"::error title=CI::e2e was skipped on CI's own {event} run, which it must run in:"
+        f"::error title=CI::{job} was skipped on CI's own {event} run, which it must run in:"
         " its if: no longer matches this run."
     )
 
 
-def scheduled_only(event: str) -> str:
+def scheduled_only(event: str, job: str = "e2e") -> str:
     return (
-        "::notice title=CI::e2e runs in CI's scheduled and manual runs only; skipped on this"
+        f"::notice title=CI::{job} runs in CI's scheduled and manual runs only; skipped on this"
         f" {event} run."
     )
+
+
+LATEST = "e2e-pdp-latest"
 
 
 def pr_only(job: str, event: str) -> str:
@@ -175,6 +178,13 @@ def pr_only(job: str, event: str) -> str:
         ({"e2e": "skipped"}, "CI push", 0, [scheduled_only("push")]),
         ({"e2e": "skipped"}, "Release release", 0, [scheduled_only("release")]),
         ({"e2e": "skipped"}, "Release workflow_dispatch", 0, [scheduled_only("workflow_dispatch")]),
+        ({LATEST: "failure"}, "CI schedule", 0, [ADVISORY + "e2e-pdp-latest failure"]),
+        ({"e2e": "failure", LATEST: "cancelled"}, "CI schedule", 0,
+         [ADVISORY + "e2e failure", ADVISORY + "e2e-pdp-latest cancelled"]),
+        ({LATEST: "skipped"}, "CI schedule", 1,
+         [own_run("schedule", LATEST), FAILED + "e2e-pdp-latest skipped"]),
+        ({"e2e": "skipped", LATEST: "skipped"}, "CI push", 0,
+         [scheduled_only("push"), scheduled_only("push", LATEST)]),
     ],
 )  # fmt: skip
 def test_ci_fails_unless_each_needed_job_succeeded_or_may_be_skipped_or_fail(
@@ -243,6 +253,9 @@ def set_needs(workflow: dict[str, Any], needs: list[str]) -> None:
     ci_env(workflow, EXPECTED_JOBS=len(needs))
 
 
+E2E_JOBS = "e2e, e2e-pdp-latest"
+
+
 def rename_ci_step(workflow: dict[str, Any]) -> None:
     for step in workflow["jobs"]["ci"]["steps"]:
         step["name"] = "Renamed"
@@ -251,18 +264,18 @@ def rename_ci_step(workflow: dict[str, Any]) -> None:
 @pytest.mark.parametrize(
     ("edit", "status", "says"),
     [
-        (lambda _: None, 0, f"CI needs every job: {', '.join(NEEDED)}. Advisory: e2e."),
+        (lambda _: None, 0, f"CI needs every job: {', '.join(NEEDED)}. Advisory: {E2E_JOBS}."),
         (lambda w: set_needs(w, [j for j in NEEDED if j != "package"]), 1, "< package"),
         (lambda w: w["jobs"].update({"new-job": {"steps": []}}), 1, "< new-job"),
         (lambda w: set_needs(w, [*NEEDED, "no-such-job"]), 1, "> no-such-job"),
         (lambda w: set_needs(w, [*NEEDED, "tests"]), 1, "CI needs tests more than once"),
-        (lambda w: w["jobs"]["notify"].update({"needs": ["ci"]}), 0, "Advisory: e2e."),
+        (lambda w: w["jobs"]["notify"].update({"needs": ["ci"]}), 0, f"Advisory: {E2E_JOBS}."),
         (lambda w: ci_env(w, ADVISORY_JOBS="tests"), 0, "Advisory: tests."),
         (lambda w: ci_env(w, ADVISORY_JOBS="tests gone"), 1, "lists gone, which CI does not need"),
         (lambda w: ci_env(w, ADVISORY_JOBS="tests tests"), 1, "ADVISORY_JOBS lists tests twice"),
-        (lambda w: ci_env(w, EXPECTED_JOBS=11), 1, "CI job is 11, but CI needs 12 jobs"),
-        (lambda w: ci_env(w, EXPECTED_JOBS=13), 1, "CI job is 13, but CI needs 12 jobs"),
-        (rename_ci_step, 1, "EXPECTED_JOBS in the CI job is not set, but CI needs 12"),
+        (lambda w: ci_env(w, EXPECTED_JOBS=12), 1, "CI job is 12, but CI needs 13 jobs"),
+        (lambda w: ci_env(w, EXPECTED_JOBS=14), 1, "CI job is 14, but CI needs 13 jobs"),
+        (rename_ci_step, 1, "EXPECTED_JOBS in the CI job is not set, but CI needs 13"),
         (lambda w: w.clear(), 2, "No jobs read from"),
         (lambda w: w.update(jobs={"ci": {"steps": []}, "notify": {"steps": []}}), 2, "No jobs"),
     ],
@@ -726,12 +739,26 @@ def test_the_slack_message_carries_the_ci_and_e2e_results(
     output = tmp_path / "output"
     env = plant_reports(tmp_path) | {"GITHUB_OUTPUT": str(output), "REPO": "o/r"}
     env |= {"RUN_URL": "https://example.invalid/run", "CI_RESULT": "success", "E2E_RESULT": result}
+    env |= {"E2E_PDP_LATEST_RESULT": "failure"}
     completed = run_script(tmp_path, "audit-report.sh", "slack", env=env)
     assert completed.returncode == 0, completed.stdout + completed.stderr
     text = output.read_text().splitlines()
     assert text[0].startswith("text<<EOF_")
     assert text[-1] == text[0].removeprefix("text<<")
-    assert text[-4:-1] == [">CI: success", line, "><https://example.invalid/run|View the run>"]
+    assert text[-5:-1] == [
+        ">CI: success",
+        line,
+        ">e2e, latest PDP: failure (did not run, or a test failed)",
+        "><https://example.invalid/run|View the run>",
+    ]
+
+
+def test_the_slack_message_needs_the_latest_pdp_result(tmp_path: Path) -> None:
+    env = plant_reports(tmp_path) | {"GITHUB_OUTPUT": str(tmp_path / "output"), "REPO": "o/r"}
+    env |= {"RUN_URL": "", "CI_RESULT": "success", "E2E_RESULT": "success"}
+    completed = run_script(tmp_path, "audit-report.sh", "slack", env=env)
+    assert completed.returncode == 2
+    assert "did not run: E2E_PDP_LATEST_RESULT unset" in completed.stdout
 
 
 # --- audit-deps.sh -----------------------------------------------------------------------

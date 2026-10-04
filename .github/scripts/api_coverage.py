@@ -7,6 +7,7 @@ Usage:
                          [--e2e-record PATH --e2e-origins PATH] [--summary PATH]
   api_coverage.py snapshot API SPEC --allowlist PATH --source URL [--fetched DATE]
                            [--out-dir DIR]
+  api_coverage.py compare API SPEC --inventory PATH --allowlist PATH
 
 Where the numbers come from:
 
@@ -64,6 +65,12 @@ as a GitHub error annotation.
 `snapshot` exits 0 when it wrote the inventory, and 2 when the document cannot be read
 or lists fewer operations than its minimum, or the allowlist cannot be read.
 
+`compare` checks a downloaded OpenAPI document, such as the one a running PDP publishes,
+against a committed inventory: it takes the document's in-scope operations as `snapshot`
+would, and compares every field the inventory keeps, as the drift check does. It exits 0
+when they match, 1 when they differ, printing each difference and a unified diff of the
+two inventories, and 2 when the document, the inventory or the allowlist cannot be used.
+
 Stdlib only.
 """
 
@@ -71,6 +78,7 @@ from __future__ import annotations
 
 import argparse
 import datetime as dt
+import difflib
 import json
 import re
 import sys
@@ -1206,6 +1214,54 @@ def snapshot_command(args: argparse.Namespace) -> int:
     return PASS
 
 
+def compare_command(args: argparse.Namespace) -> int:
+    """Compare a downloaded spec's in-scope operations with an inventory; return 0, 1 or 2."""
+    spec, inventory = Path(args.spec), Path(args.inventory)
+    try:
+        scope = load_allowlist(Path(args.allowlist)).scope[args.api]
+        operations = _snapshot_operations(args.api, spec)
+        committed = load_inventory(args.api, inventory)
+        kept = [
+            op for op in operations if scope.includes(op["method"], op["path"], tuple(op["tags"]))
+        ]
+        published = Inventory(
+            api=args.api,
+            source=str(spec),
+            operations=[
+                _operation(args.api, op, f"{op['method']} {op['path']} of {spec}") for op in kept
+            ],
+        )
+        committed_text = inventory.read_text(encoding="utf-8")
+    except (CoverageError, OSError) as exc:
+        print(f"::error title=API spec comparison::{_annotation(exc)}")
+        return DID_NOT_RUN
+    differences = _drift(published, committed)
+    in_scope = _plural(len(kept), "in-scope operation")
+    if not differences:
+        print(f"{spec} matches {inventory}: {in_scope}.")
+        return PASS
+    title = TITLES[args.api]
+    print(f"{spec} differs from {inventory}, the committed {title} inventory ({in_scope}):")
+    print("\n".join(f"- {d.subject}: {d.detail}" for d in differences))
+    published_text = json.dumps({"operations": kept}, indent=2, sort_keys=True) + "\n"
+    print(
+        "".join(
+            difflib.unified_diff(
+                committed_text.splitlines(keepends=True),
+                published_text.splitlines(keepends=True),
+                fromfile=str(inventory),
+                tofile=f"{spec}, in scope",
+            )
+        ),
+        end="",
+    )
+    print(
+        f"::error title=API spec comparison::{_annotation(spec)} differs from the committed "
+        f"{title} inventory {_annotation(inventory)}: {len(differences)} difference(s)"
+    )
+    return FINDINGS
+
+
 def _snapshot_operations(api: str, spec: Path) -> list[dict[str, Any]]:
     label = f"the {TITLES[api]} spec"
     operations = operations_of(read_json(spec, label), f"{label} {spec}")
@@ -1251,6 +1307,13 @@ def parser() -> argparse.ArgumentParser:
     snapshot.add_argument("--fetched", help="when it was fetched (default: today, UTC)")
     snapshot.add_argument("--out-dir", default=".github/api-specs", help="%(default)s")
     snapshot.set_defaults(handler=snapshot_command)
+
+    compare = commands.add_parser("compare", help="compare a spec with a committed inventory")
+    compare.add_argument("api", choices=APIS)
+    compare.add_argument("spec", help="the downloaded OpenAPI document")
+    compare.add_argument("--inventory", required=True, help="the committed inventory")
+    compare.add_argument("--allowlist", required=True, help="the allowlist with the scope")
+    compare.set_defaults(handler=compare_command)
     return root
 
 

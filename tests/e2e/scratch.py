@@ -326,10 +326,15 @@ class ScratchWorld:
 
 
 def new_run_id(environ: Mapping[str, str]) -> str:
-    """Return a run ID for keys: GitHub's run ID and attempt, or a random local one."""
+    """Return a run ID for keys: GitHub's run ID, attempt and job, or a random local one.
+
+    The job keeps apart the environments of CI's two e2e jobs, which run one after the
+    other in the same workflow run.
+    """
     run, attempt = environ.get("GITHUB_RUN_ID"), environ.get("GITHUB_RUN_ATTEMPT")
-    if run and attempt:
-        return f"{run}-{attempt}"
+    job = environ.get("GITHUB_JOB")
+    if run and attempt and job:
+        return f"{run}-{attempt}-{job}"
     return f"local-{secrets.token_hex(4)}"
 
 

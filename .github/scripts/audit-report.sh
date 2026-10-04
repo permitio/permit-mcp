@@ -15,7 +15,8 @@
 #       With GATE_DEV_TREE false, only the runtime-* trees are annotated and
 #       gated; the others are in the summary only.
 #   slack  Writes the Slack message as the step output `text` to GITHUB_OUTPUT,
-#       with REPO, RUN_URL, and the CI and e2e results (CI_RESULT, E2E_RESULT).
+#       with REPO, RUN_URL, and the results of CI and the two e2e jobs
+#       (CI_RESULT, E2E_RESULT, E2E_PDP_LATEST_RESULT).
 set -euo pipefail
 
 # Exits 2, as a check that did not run, when a variable it reads is unset.
@@ -64,13 +65,14 @@ gate() {
 }
 
 slack() {
-  require GITHUB_OUTPUT REPO RUN_URL CI_RESULT E2E_RESULT
+  require GITHUB_OUTPUT REPO RUN_URL CI_RESULT E2E_RESULT E2E_PDP_LATEST_RESULT
   local delimiter
   delimiter="EOF_$(openssl rand -hex 16)"
   {
     echo "text<<${delimiter}"
     format_audit "${trees[@]}" --slack --repo "$REPO" --run-url "$RUN_URL" \
-      --ci-result "$CI_RESULT" --e2e-result "$E2E_RESULT"
+      --ci-result "$CI_RESULT" --e2e-result "$E2E_RESULT" \
+      --e2e-pdp-latest-result "$E2E_PDP_LATEST_RESULT"
     echo "${delimiter}"
   } >>"$GITHUB_OUTPUT"
 }
