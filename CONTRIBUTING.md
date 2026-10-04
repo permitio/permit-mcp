@@ -233,7 +233,7 @@ PERMIT_E2E_PROJECT_API_KEY=permit_key_... PERMIT_E2E_PROJECT_ID=<project id or k
   `docker rm --force`. The helpers are tested offline, with a stand-in docker, in
   `tests/test_e2e_pdp.py`.
 - The last container test reads the OpenAPI document the running container publishes at
-  `/openapi.json` (pdp-v2 serves it without a token, from its horizon service) and runs
+  `/openapi.json` (pdp-v2 serves it without a token, from the PDP's decision service) and runs
   `api_coverage.py compare pdp` on it: the document's in-scope operation, `POST /allowed`,
   must match `.github/api-specs/pdp.json` in every field the inventory keeps (operationId,
   tags, deprecated flag, parameters and request body). When they differ it fails with each

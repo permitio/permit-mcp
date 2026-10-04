@@ -18,8 +18,8 @@ the container is removed when the block ends. Every error and log it returns is 
 registered secrets, and its log is shown without the health-check noise.
 
 `published_spec` reads the OpenAPI document a running PDP publishes at `OPENAPI_PATH`, which
-needs no token: pdp-v2's server answers it by proxying its horizon service's FastAPI
-document.
+needs no token: pdp-v2's server answers it by proxying the FastAPI document of the PDP's
+decision service.
 """
 
 from __future__ import annotations
