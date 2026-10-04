@@ -335,9 +335,11 @@ def test_every_mismatch_is_reported_before_the_check_fails(tmp_path: Path) -> No
 def test_pypi_never_serving_the_version_is_no_verdict(tmp_path: Path) -> None:
     dist = plant(tmp_path, Release())
     (tmp_path / "web" / JSON_URL).unlink()
-    completed = run_script(tmp_path, "verify-release.sh", dist, env=inputs(WAIT_SECONDS="1"))
+    # bash's SECONDS ticks on whole wall-clock seconds, so a 1-second deadline can pass
+    # right after the first request; 3 leaves at least 2 seconds of asking.
+    completed = run_script(tmp_path, "verify-release.sh", dist, env=inputs(WAIT_SECONDS="3"))
     assert completed.returncode == 2, completed.stdout + completed.stderr
-    never = f"PyPI did not serve permit-mcp {VERSION} within 1s (last answer: 404)."
+    never = f"PyPI did not serve permit-mcp {VERSION} within 3s (last answer: 404)."
     assert errors(completed) == [f"::error title=Verify::{never}"]
     asked = log(tmp_path, "curl")
     assert len(asked) > 1, "it asked until the deadline"
