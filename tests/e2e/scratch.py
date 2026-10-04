@@ -2,7 +2,7 @@
 
 `scratch_world` first sweeps the project: it deletes every `mcp-e2e-*` environment older than
 an hour, which a run that was killed before its teardown, or whose create answer was lost,
-left behind. CI runs one e2e job at a time and a job stops within 15 minutes, so an
+left behind. CI runs one e2e job at a time and a job stops within 25 minutes, so an
 environment that old belongs to no live run; one an hour old or younger may be a developer's
 run in progress, and is left alone. Then it creates this run's environment, registers its
 delete, and fills it. When the block ends, whatever happened inside, it deletes the
@@ -20,6 +20,10 @@ The world holds two access-request setups and one operation-approval setup:
 - RBAC: a User Management element over tenant roles. `tenant-viewer` and `tenant-editor` are
   top-level roles, assigned in tenant `default`, with the same levels. It has its own
   requester, so a role granted in one flow does not decide a permission check in the other.
+- The container PDP's checks (in tests/e2e/test_permit.py) have users of their own, so
+  a role granted in the cloud PDP's tests does not decide them: `pdp-requester` holds what the
+  ReBAC requester holds, `pdp-rbac-requester` what the RBAC requester holds, and
+  `pdp-bystander` both, and never requests anything.
 - Operation approvals: an Approval Management element. Permit lets a user review an operation
   approval on an instance when they hold the `_Reviewer_` role there, and grants `_Approved_`
   when one is approved; both are roles on `document`, and the reviewer holds `_Reviewer_` on
@@ -290,6 +294,9 @@ class ScratchWorld:
     requester: Person
     rbac_requester: Person
     reviewer: Person
+    pdp_requester: Person
+    pdp_rbac_requester: Person
+    pdp_bystander: Person
     sent: Mapping[str, Mapping[str, Any]]
 
     def settings(self) -> Settings:
@@ -483,7 +490,14 @@ def _fill(
 
     people = {
         name: _create_user(env, path("facts", "users"), f"{name}-{run_id}")
-        for name in ("requester", "rbac-requester", "reviewer")
+        for name in (
+            "requester",
+            "rbac-requester",
+            "reviewer",
+            "pdp-requester",
+            "pdp-rbac-requester",
+            "pdp-bystander",
+        )
     }
 
     rebac_levels = {"LEVEL_2": [role_ids[EDITOR]], "LEVEL_3": [role_ids[VIEWER]]}
@@ -515,6 +529,10 @@ def _fill(
         (people["reviewer"], OA_REVIEWER_ROLE, on_instance),
         (people["reviewer"], TENANT_EDITOR, None),
         (people["rbac-requester"], TENANT_VIEWER, None),
+        (people["pdp-requester"], VIEWER, on_instance),
+        (people["pdp-rbac-requester"], TENANT_VIEWER, None),
+        (people["pdp-bystander"], VIEWER, on_instance),
+        (people["pdp-bystander"], TENANT_VIEWER, None),
     )
     for person, role, resource_instance in assignments:
         assignment: dict[str, str] = {"user": person.key, "role": role, "tenant": TENANT}
@@ -532,6 +550,9 @@ def _fill(
         requester=people["requester"],
         rbac_requester=people["rbac-requester"],
         reviewer=people["reviewer"],
+        pdp_requester=people["pdp-requester"],
+        pdp_rbac_requester=people["pdp-rbac-requester"],
+        pdp_bystander=people["pdp-bystander"],
         sent=sent,
     )
 

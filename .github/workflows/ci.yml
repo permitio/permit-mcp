@@ -550,8 +550,12 @@ jobs:
   # The end-to-end suite (tests/e2e) against the real Permit API and cloud PDP:
   # it creates a scratch environment in the project the two secrets name, runs
   # every tool in it as a requester and a reviewer, and deletes it at the end
-  # (CONTRIBUTING.md). Advisory: a Permit outage must not fail CI, which prints
-  # its failure as a warning. It runs in CI's own scheduled and manual runs only,
+  # (CONTRIBUTING.md). It also runs check_permission against a PDP container,
+  # pinned by digest in tests/e2e/pdp.py, which the test session starts with
+  # docker once the scratch environment's key exists, and removes before the
+  # environment is deleted; a failed test that used it prints its log.
+  # Advisory: a Permit outage must not fail CI, which prints its failure as a
+  # warning. It runs in CI's own scheduled and manual runs only,
   # never on a pull request: the secrets are the e2e environment's, which only
   # main may deploy to, so no other branch's workflow gets them. Elsewhere it is
   # skipped, and CI passes that with a notice (SCHEDULED_JOBS); a skip in CI's
@@ -560,6 +564,7 @@ jobs:
   # group for the project: runs wait for each other, and none is cancelled for a
   # newer one (GitHub still drops a waiting run when another starts waiting).
   # The scratch environment's API key is masked as soon as it is read. No cache.
+  # The container PDP takes up to 5 minutes to get healthy, hence the timeout.
   e2e:
     name: e2e
     if: >-
@@ -567,7 +572,7 @@ jobs:
       (github.event_name == 'schedule' || github.event_name == 'workflow_dispatch')
     environment: e2e
     runs-on: ubuntu-24.04
-    timeout-minutes: 15
+    timeout-minutes: 25
     permissions:
       contents: read
     concurrency:

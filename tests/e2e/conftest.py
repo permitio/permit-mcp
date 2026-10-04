@@ -2,17 +2,22 @@
 
 The suite runs only when selected (`-m e2e`; pyproject.toml's addopts deselects it
 otherwise) and needs PERMIT_E2E_PROJECT_API_KEY and PERMIT_E2E_PROJECT_ID, and optionally
-PERMIT_E2E_API_URL. When a selected run lacks one, pytest exits 2 before any test starts,
-saying the suite did not run: never a pass, and never a skip.
+PERMIT_E2E_API_URL. The container PDP's tests also need docker on PATH. When a selected run
+lacks one of these, pytest exits 2 before any test starts, and so before any request or
+container, saying the suite did not run: never a pass, and never a skip.
+
+When a test that used the container PDP fails, its report gets a section with the PDP's log.
 """
 
 from __future__ import annotations
 
 import os
+import shutil
 from typing import TYPE_CHECKING
 
 import pytest
 
+from tests.e2e.pdp import ContainerPdp, run_container_pdp
 from tests.e2e.scratch import (
     DEFAULT_API_URL,
     AdminClient,
@@ -22,12 +27,14 @@ from tests.e2e.scratch import (
 )
 
 if TYPE_CHECKING:
-    from collections.abc import Iterator
+    from collections.abc import Generator, Iterator
 
     from tests.e2e.scratch import ScratchWorld
 
 REQUIRED_VARIABLES = ("PERMIT_E2E_PROJECT_API_KEY", "PERMIT_E2E_PROJECT_ID")
 DID_NOT_RUN_EXIT_CODE = 2
+CONTAINER_PDP_FIXTURE = "container_pdp"
+PDP_LOG_SECTION = "container PDP log, without health checks"
 
 
 def missing_variables() -> list[str]:
@@ -36,19 +43,42 @@ def missing_variables() -> list[str]:
 
 
 def pytest_collection_finish(session: pytest.Session) -> None:
-    """Stop with exit status 2 when e2e tests are selected to run without the credentials.
+    """Stop with exit status 2 when e2e tests are selected to run without what they need.
 
-    Listing them (--collect-only) needs no credentials.
+    Listing them (--collect-only) needs nothing.
     """
-    selected = any(item.get_closest_marker("e2e") for item in session.items)
+    if session.config.option.collectonly:
+        return
+    selected = [item for item in session.items if item.get_closest_marker("e2e")]
     missing = missing_variables()
-    if selected and missing and not session.config.option.collectonly:
+    if selected and missing:
         pytest.exit(
             f"The end-to-end suite did not run: set {' and '.join(missing)} (a project-level "
             "API key of a Permit project kept for these tests, and that project's ID or key). "
             "See CONTRIBUTING.md.",
             returncode=DID_NOT_RUN_EXIT_CODE,
         )
+    uses_docker = any(
+        CONTAINER_PDP_FIXTURE in getattr(item, "fixturenames", ()) for item in selected
+    )
+    if uses_docker and shutil.which("docker") is None:
+        pytest.exit(
+            "The end-to-end suite did not run: docker is not on PATH, and the container PDP's "
+            "tests run a PDP with it. See CONTRIBUTING.md.",
+            returncode=DID_NOT_RUN_EXIT_CODE,
+        )
+
+
+@pytest.hookimpl(wrapper=True)
+def pytest_runtest_makereport(
+    item: pytest.Item,
+) -> Generator[None, pytest.TestReport, pytest.TestReport]:
+    """Add the container PDP's log to the report of a failed test that used it."""
+    report = yield
+    started = getattr(item, "funcargs", {}).get(CONTAINER_PDP_FIXTURE)
+    if report.when == "call" and report.failed and isinstance(started, ContainerPdp):
+        report.sections.append((PDP_LOG_SECTION, started.log()))
+    return report
 
 
 @pytest.fixture(scope="session")
@@ -67,3 +97,11 @@ def world(pytestconfig: pytest.Config) -> Iterator[ScratchWorld]:
     project_id = os.environ["PERMIT_E2E_PROJECT_ID"].strip()
     with scratch_world(project, project_id, run_id, on_env_key=mask) as built:
         yield built
+
+
+@pytest.fixture(scope="session")
+def container_pdp(world: ScratchWorld) -> Iterator[ContainerPdp]:
+    """Run a PDP container for the scratch environment, removed before the environment is."""
+    name = f"{world.environment_key}-pdp"
+    with run_container_pdp(name, world.api_key, world.api_url) as started:
+        yield started

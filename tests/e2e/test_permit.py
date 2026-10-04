@@ -1,9 +1,15 @@
-"""Every tool against the real Permit API and cloud PDP, in a scratch environment.
+"""Every tool against the real Permit API and cloud PDP, and check_permission in a container PDP.
+
+All of it runs in a scratch environment.
 
 Each user talks to their own server, built with `create_server(settings,
 identity=bound_user(<their key>))` and reached through the MCP client, as a host would. The
 world is described in tests/e2e/scratch.py. A role granted by an approval reaches the cloud
 PDP after a policy sync, so those checks poll, bounded by elapsed time.
+
+The last tests send check_permission to a PDP container instead, pinned by digest and run for
+the session (tests/e2e/pdp.py), with users of their own, so the cloud PDP's tests decide none
+of their answers. They poll the same way.
 
 The texts are legal but hostile: reasons in several scripts, and a 4096-character reviewer
 comment (no maximum is documented; the API stores it as text), each compared with what
@@ -12,6 +18,7 @@ Permit returns.
 
 from __future__ import annotations
 
+import dataclasses
 from contextlib import asynccontextmanager
 from typing import TYPE_CHECKING, Any
 
@@ -36,11 +43,12 @@ if TYPE_CHECKING:
     from collections.abc import AsyncIterator, Mapping
 
     from permit_mcp import Settings
+    from tests.e2e.pdp import ContainerPdp
     from tests.e2e.scratch import Person, ScratchWorld
 
 pytestmark = pytest.mark.e2e
 
-# The cloud PDP applies a role assignment after a policy sync.
+# A PDP, the cloud's or a container, applies a role assignment after a policy sync.
 PDP_SYNC_TIMEOUT_SECONDS = 120.0
 REASON = 'Need to edit «Q3 report» — für Prüfung ✅ 日本語 עברית "quoted" <b>&amp;</b> \\ end'
 LONG_COMMENT = ("Reviewed — ✅ für Prüfung; 日本語のコメント; עברית; «Ωμέγα» <i>&</i> \\ " * 80)[
@@ -122,7 +130,15 @@ def test_the_world_reads_back_as_created(world: ScratchWorld) -> None:
     assert {key: sorted(role["permissions"]) for key, role in resource["roles"].items()} == {
         key: sorted(role["permissions"]) for key, role in sent["roles"].items()
     }
-    for person in (world.requester, world.rbac_requester, world.reviewer):
+    people = (
+        world.requester,
+        world.rbac_requester,
+        world.reviewer,
+        world.pdp_requester,
+        world.pdp_rbac_requester,
+        world.pdp_bystander,
+    )
+    for person in people:
         user = api.request("GET", world.env_path("facts", "users", person.key))
         assert user["id"] == person.id
         assert {key: user.get(key) for key in person.created} == dict(person.created)
@@ -362,3 +378,91 @@ async def test_operation_approvals_are_approved_cancelled_and_denied(
             third,
         )
         assert denied["reviewer_comment"] == LONG_COMMENT
+
+
+def on_container(settings: Settings, pdp: ContainerPdp) -> Settings:
+    """The same settings, with permission checks sent to the container PDP."""
+    return dataclasses.replace(settings, pdp_url=pdp.url)
+
+
+async def test_rebac_edit_on_the_instance_is_allowed_by_the_container_pdp_after_approval(
+    world: ScratchWorld, container_pdp: ContainerPdp
+) -> None:
+    settings, doc = on_container(world.settings(), container_pdp), world.instance
+    async with (
+        as_user(settings, world.pdp_requester) as requester,
+        as_user(settings, world.reviewer) as reviewer,
+        as_user(settings, world.pdp_bystander) as bystander,
+    ):
+        # A read allowed first shows the container holds the world's roles, so the denials
+        # below are decisions, not missing data.
+        await poll(
+            "the requester's read permission in the container PDP",
+            lambda: allowed(requester, "read", doc),
+            expected=True,
+            within=PDP_SYNC_TIMEOUT_SECONDS,
+        )
+        assert await allowed(requester, "edit", doc) is False
+
+        created = assert_pending(
+            await tool(
+                requester,
+                "create_access_request",
+                role=EDITOR,
+                reason=REASON,
+                resource_instance=doc,
+            ),
+            "access_request",
+        )
+        assert_decided(
+            await tool(reviewer, "approve_access_request", access_request_id=created["id"]),
+            "access_request",
+            "approved",
+            created,
+        )
+        await poll(
+            "the approved requester's edit permission in the container PDP",
+            lambda: allowed(requester, "edit", doc),
+            expected=True,
+            within=PDP_SYNC_TIMEOUT_SECONDS,
+        )
+        assert await allowed(bystander, "read", doc) is True
+        assert await allowed(bystander, "edit", doc) is False
+
+
+async def test_rbac_edit_on_the_type_is_allowed_by_the_container_pdp_after_approval(
+    world: ScratchWorld, container_pdp: ContainerPdp
+) -> None:
+    settings = on_container(world.rbac_settings(), container_pdp)
+    async with (
+        as_user(settings, world.pdp_rbac_requester) as requester,
+        as_user(settings, world.reviewer) as reviewer,
+        as_user(settings, world.pdp_bystander) as bystander,
+    ):
+        await poll(
+            f"the requester's read permission on the {RESOURCE} type in the container PDP",
+            lambda: allowed(requester, "read"),
+            expected=True,
+            within=PDP_SYNC_TIMEOUT_SECONDS,
+        )
+        assert await allowed(requester, "edit") is False
+
+        created = assert_pending(
+            await tool(requester, "create_access_request", role=TENANT_EDITOR, reason=REASON),
+            "access_request",
+        )
+        assert_decided(
+            await tool(reviewer, "approve_access_request", access_request_id=created["id"]),
+            "access_request",
+            "approved",
+            created,
+        )
+        await poll(
+            f"the approved requester's edit permission on the {RESOURCE} type in {TENANT}, "
+            "in the container PDP",
+            lambda: allowed(requester, "edit"),
+            expected=True,
+            within=PDP_SYNC_TIMEOUT_SECONDS,
+        )
+        assert await allowed(bystander, "read") is True
+        assert await allowed(bystander, "edit") is False

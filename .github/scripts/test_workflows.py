@@ -59,7 +59,7 @@ JOBS: dict[str, tuple[list[str], dict[str, tuple[Any, ...]]]] = {
             "mutation": (PULL_REQUEST, None, 30, {"fetch-depth": 2}),
             "workflow-hardening": (None, None, 10, {}),
             "gitleaks": (None, None, 10, {"fetch-depth": 0}),
-            "e2e": (OWN_RUN, None, 15, {}),
+            "e2e": (OWN_RUN, None, 25, {}),
             "ci": ("always()", NEEDED, 5, {}),
             "notify": (f"always() && {OWN_RUN}", ["audit", "ci", "e2e"], 5, {}),
         },

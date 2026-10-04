@@ -170,16 +170,18 @@ and manual runs a skipped `e2e` fails CI, since there it means the job's `if:` b
 | `mutation` | `.github/scripts/mutation_gate.py` on the package lines a pull request changes; fails when the tests catch fewer than 80% of the mutants |
 | `workflow-hardening` | actionlint, and zizmor with its online audits |
 | `gitleaks` | gitleaks on the whole history |
-| `e2e` | The end-to-end suite against Permit (below), then a check that no test skipped, with the secrets of the `e2e` environment. Advisory: when it fails, CI passes and prints a warning. Scheduled and manual runs of CI only |
+| `e2e` | The end-to-end suite against Permit and a pinned PDP container (below), then a check that no test skipped, with the secrets of the `e2e` environment. Advisory: when it fails, CI passes and prints a warning. Scheduled and manual runs of CI only |
 
 CI's scheduled run each Monday, and a manual run, also post to Slack: the audit result, CI's
 result and the `e2e` result.
 
 ### End-to-end tests
 
-`tests/e2e` runs every tool against the real Permit API and cloud PDP. A plain `uv run pytest`
-deselects it (`addopts = ["-m", "not e2e"]` in `pyproject.toml`); deselected tests are not
-skipped tests, so the offline runs' no-skip check still holds. Select it with `-m e2e`:
+`tests/e2e` runs every tool against the real Permit API and cloud PDP, and `check_permission`
+against a PDP container too, so it needs [docker](https://docs.docker.com/get-started/get-docker/)
+on `PATH`. A plain `uv run pytest` deselects it (`addopts = ["-m", "not e2e"]` in
+`pyproject.toml`); deselected tests are not skipped tests, so the offline runs' no-skip check
+still holds. Select it with `-m e2e`:
 
 ```shell
 PERMIT_E2E_PROJECT_API_KEY=permit_key_... PERMIT_E2E_PROJECT_ID=<project id or key> \
@@ -196,13 +198,29 @@ PERMIT_E2E_PROJECT_API_KEY=permit_key_... PERMIT_E2E_PROJECT_ID=<project id or k
   older than an hour: what a run killed before its teardown left behind. A run lasts well
   under an hour, so it never deletes one in use.
 - `PERMIT_E2E_API_URL` points the suite at another Permit API; the default is
-  `https://api.permit.io`. Permission checks go to the cloud PDP.
-- With either variable unset, `pytest -m e2e` exits 2 before any test starts, saying the suite
-  did not run.
-- In the environment, the suite builds a `document` resource type with one instance, three
-  users (a requester for each kind of element, and a reviewer), a ReBAC and an RBAC User
-  Management element, and an Approval Management element. `tests/e2e/scratch.py` describes
-  them. The world's own helpers are tested offline, in `tests/test_e2e_scratch.py`.
+  `https://api.permit.io`, and the container PDP fetches its policy from it too.
+- With either variable unset, or docker not on `PATH`, `pytest -m e2e` exits 2 before any test
+  starts, and before any request or container, saying the suite did not run.
+- In the environment, the suite builds a `document` resource type with one instance, six
+  users (a requester for each kind of element, and a reviewer; and for the container PDP's
+  tests, a requester for each kind of element and a user who requests nothing), a ReBAC and
+  an RBAC User Management element, and an Approval Management element.
+  `tests/e2e/scratch.py` describes them. The world's own helpers are tested offline, in
+  `tests/test_e2e_scratch.py`.
+- The container PDP is `PDP_IMAGE` in `tests/e2e/pdp.py`, pinned by version and by the digest
+  of that version's multi-arch image index, so a new PDP release does not change what the
+  suite runs against:
+  `permitio/pdp-v2:v0.9.15@sha256:720031733fc918f053a5d4e72225324d246cbc72136ff62180cbee8f491af44e`.
+  To move the pin, take a release at least 7 days old and the `digest` of its tag from
+  `https://hub.docker.com/v2/repositories/permitio/pdp-v2/tags/<tag>`, and change both.
+  Once the world is built, the session runs it with the scratch environment's key (handed to
+  docker in its environment, never on its command line), published on `127.0.0.1` at a port
+  docker picks, and waits up to 5 minutes for it to answer 200 on `/healthy`. It removes the
+  container before it deletes the environment, after a failure too. When the PDP does not get
+  healthy, or a test that used it fails, the run prints the PDP's log, without its health
+  checks. A run killed before its teardown leaves the container `mcp-e2e-<run id>-pdp`
+  running; remove it with `docker rm --force`. The helpers are tested offline, with a
+  stand-in docker, in `tests/test_e2e_pdp.py`.
 - The world's setup retries a 429 after its Retry-After, and the tests retry a tool call
   Permit answered with 429. The server itself never retries. Waits for the PDP are bounded by
   elapsed time.
