@@ -1,4 +1,7 @@
-"""The permit SDK's aiohttp verifies with the context server.py builds (CVE-2026-111943, PER-17672)."""
+"""The permit SDK's aiohttp verifies with the context server.py builds.
+
+CVE-2026-111943, PER-17672.
+"""
 
 import os
 import ssl
@@ -14,7 +17,10 @@ COMPROMISED_ROOTS = {"emSign ECC Root CA - G3", "AAA Certificate Services"}
 
 
 def _subjects(context: ssl.SSLContext) -> list[str]:
-    return [dict(field[0] for field in cert["subject"]).get("commonName", "") for cert in context.get_ca_certs()]
+    return [
+        dict(field[0] for field in cert["subject"]).get("commonName", "")
+        for cert in context.get_ca_certs()
+    ]
 
 
 @pytest.fixture
@@ -39,7 +45,8 @@ def test_by_default_only_certifi_is_trusted() -> None:
 
 def test_ssl_cert_file_wins_as_in_httpx(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     bundle = tmp_path / "one.pem"
-    pem = ssl.DER_cert_to_PEM_cert(ssl.create_default_context(cafile=certifi.where()).get_ca_certs(True)[0])
+    certifi_context = ssl.create_default_context(cafile=certifi.where())
+    pem = ssl.DER_cert_to_PEM_cert(certifi_context.get_ca_certs(True)[0])
     bundle.write_text(pem)
     monkeypatch.setenv("SSL_CERT_FILE", str(bundle))
     monkeypatch.setenv("SSL_CERT_DIR", str(tmp_path))
