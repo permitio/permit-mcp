@@ -46,8 +46,9 @@ def no_cert_env(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 def test_importing_the_server_pins_aiohttps_default() -> None:
-    assert isinstance(aiohttp.connector._SSL_CONTEXT_VERIFIED, ssl.SSLContext)
-    assert not COMPROMISED_ROOTS & set(_subjects(aiohttp.connector._SSL_CONTEXT_VERIFIED))
+    # The import saw this same environment (.env included), so a user's SSL_CERT_FILE holds.
+    pinned = aiohttp.connector._SSL_CONTEXT_VERIFIED
+    assert sorted(_subjects(pinned)) == sorted(_subjects(server._verified_context()))
 
 
 @pytest.mark.usefixtures("no_cert_env")
@@ -76,7 +77,7 @@ def test_ssl_cert_dir_is_used_alone(tmp_path: Path, monkeypatch: pytest.MonkeyPa
     assert server._verified_context().get_ca_certs() == []
 
 
-@pytest.mark.usefixtures("no_cert_env")
+@pytest.mark.usefixtures("clean_pin")
 def test_the_server_does_not_touch_the_environment() -> None:
     server._pin_aiohttp_trust_store()
     assert "SSL_CERT_FILE" not in os.environ
