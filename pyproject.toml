@@ -22,6 +22,10 @@ dependencies = [
 [dependency-groups]
 dev = ["pytest>=8", "cryptography>=50.0.2"]
 
+[tool.pytest.ini_options]
+# No [build-system], so uv sync doesn't install the package itself.
+pythonpath = ["src"]
+
 [tool.uv]
 # Older uv releases trust the compromised eMudhra root when they download packages
 # (GHSA-hq85-5cpj-mr62). Workspace members, the food-ordering example included, inherit this.
