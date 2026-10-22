@@ -8,9 +8,11 @@ dependencies = [
     "aiosqlite>=0.21.0",
     "bcrypt>=4.3.0",
     # CVE-2026-111943 (PER-17672): certifi 2026.10.19 removes eMudhra's "emSign ECC
-    # Root CA - G3", whose intermediate CA keys are compromised. permit_mcp.py and
-    # permit_client.py point httpx and the permit SDK's aiohttp at it.
+    # Root CA - G3", whose intermediate CA keys are compromised. httpx verifies against
+    # certifi unless SSL_CERT_FILE or SSL_CERT_DIR is set, and permit_mcp.py and
+    # permit_client.py give the permit SDK's aiohttp the same choice.
     "certifi>=2026.10.19",
+    "aiohttp>=3.14.3,<4",
     "fastapi[standard]>=0.115.12",
     "google-genai>=1.12.1",
     "httpx>=0.28.1",
