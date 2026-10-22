@@ -20,7 +20,7 @@ dependencies = [
 ]
 
 [dependency-groups]
-dev = ["pytest>=8"]
+dev = ["pytest>=8", "cryptography>=50.0.2"]
 
 [tool.uv]
 # Older uv releases trust the compromised eMudhra root when they download packages
