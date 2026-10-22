@@ -9,8 +9,27 @@ dependencies = [
     "mcp>=1.2.1",
     "permit>=2.7.2",
     "httpx>=0.28.1",
+    # CVE-2026-111943 (PER-17672): certifi 2026.10.19 removes eMudhra's "emSign ECC
+    # Root CA - G3", whose intermediate CA keys are compromised. httpx verifies against
+    # certifi unless SSL_CERT_FILE or SSL_CERT_DIR is set, and server.py gives the permit
+    # SDK's aiohttp the same choice.
+    "certifi>=2026.10.19",
+    # server.py replaces aiohttp's default SSL context (above); the permit SDK requires it too.
+    "aiohttp>=3.14.3,<4",
     "python-dotenv>=1.0.1",
 ]
+
+[dependency-groups]
+dev = ["pytest>=8", "cryptography>=50.0.2"]
+
+[tool.pytest.ini_options]
+# No [build-system], so uv sync doesn't install the package itself.
+pythonpath = ["src"]
+
+[tool.uv]
+# Older uv releases trust the compromised eMudhra root when they download packages
+# (GHSA-hq85-5cpj-mr62). Workspace members, the food-ordering example included, inherit this.
+required-version = ">=0.13.4"
 
 [tool.uv.workspace]
 members = ["examples/food-ordering-system"]

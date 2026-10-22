@@ -18,7 +18,7 @@ The server can be used to provide tools that allow end-users to send access requ
 
 ## Prerequisite
 - Python >= 3.10
-- `uv` >= 0.6.1
+- `uv` >= 0.13.4 (older releases trust a compromised eMudhra root when downloading packages, GHSA-hq85-5cpj-mr62)
 
 ## Installation
 
