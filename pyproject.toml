@@ -9,8 +9,9 @@ dependencies = [
     "mcp>=1.2.1",
     "permit>=2.7.2",
     "httpx>=0.28.1",
-    # CVE-2026-111943 (PER-17672): certifi 2026.10.19 drops the compromised
-    # eMudhra "emSign ECC Root CA - G3"; httpx verifies against it.
+    # CVE-2026-111943 (PER-17672): certifi 2026.10.19 removes eMudhra's "emSign ECC
+    # Root CA - G3", whose intermediate CA keys are compromised. httpx verifies against
+    # certifi unless SSL_CERT_FILE is set; server.py points the permit SDK's aiohttp at it.
     "certifi>=2026.10.19",
     "python-dotenv>=1.0.1",
 ]

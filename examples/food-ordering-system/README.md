@@ -28,7 +28,7 @@ A command-line chat interface where users can log in and talk to the system. It 
 ## Prerequisites
 
 - Python >= 3.10
-- `uv` >= 0.6.1
+- `uv` >= 0.13.4 (older releases trust a compromised eMudhra root when downloading packages, GHSA-hq85-5cpj-mr62)
 - Running instance of the [Local Permit PDP](https://docs.permit.io/how-to/deploy/deploy-to-production/#installing-the-pdp)
 
 ## Setting up Permit

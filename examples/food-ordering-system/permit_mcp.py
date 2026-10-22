@@ -1,7 +1,16 @@
+import os
+
+import certifi
+
+# CVE-2026-111943 (PER-17672): the permit SDK's aiohttp verifies against OpenSSL's default
+# store, which can still trust eMudhra's compromised intermediate CAs (macOS's /etc/ssl/cert.pem
+# does). Point it, and httpx, at certifi's bundle unless SSL_CERT_FILE is already set. aiohttp
+# builds its SSL context when it is imported, so this stays above every other import.
+os.environ.setdefault("SSL_CERT_FILE", certifi.where())
+
 from typing import List, Dict, Optional, Callable, Union
 import httpx
 import json
-import os
 from mcp.server.fastmcp import FastMCP
 from mcp.server.fastmcp.exceptions import ToolError
 
