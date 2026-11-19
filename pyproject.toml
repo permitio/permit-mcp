@@ -6,7 +6,7 @@ readme = "README.md"
 requires-python = ">=3.10"
 dependencies = [
     "aiosqlite>=0.21.0",
-    "mcp>=1.2.1",
+    "mcp>=1.2.1,<2",
     "permit>=2.7.2",
     "httpx>=0.28.1",
     # CVE-2026-111943 (PER-17672): certifi 2026.10.19 removes eMudhra's "emSign ECC
