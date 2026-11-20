@@ -67,6 +67,20 @@ ENV_ID = os.getenv("ENV_ID")
 OPERATION_ELEMENTS_CONFIG_ID = os.getenv('OPERATION_ELEMENTS_CONFIG_ID')
 ACCESS_ELEMENTS_CONFIG_ID = os.getenv("ACCESS_ELEMENTS_CONFIG_ID")
 
+API_URL = "https://api.permit.io/v2"
+
+
+async def _api_get(path: str, params: Optional[Dict] = None):
+    """GET a Permit API path, dropping None params; raise ToolError on non-2xx."""
+    headers = {"authorization": f"Bearer {PERMIT_API_KEY}"}
+    params = {k: v for k, v in (params or {}).items() if v is not None}
+    async with httpx.AsyncClient() as client:
+        response = await client.get(f"{API_URL}{path}", headers=headers, params=params)
+    if 200 <= response.status_code < 300:
+        return response.json()
+    raise ToolError(
+        f"Request failed with status code {response.status_code}: {response.text}")
+
 
 class PermitServer:
     def __init__(self, mcp: FastMCP, exclude_tools=None):
@@ -88,21 +102,30 @@ class PermitServer:
 
     def register_tools(self):
 
-        async def list_resource_instances(page: int = 1, per_page: int = 100):
+        async def list_resource_instances(
+            page: int = 1,
+            per_page: int = 100,
+            env: Optional[str] = None,
+            tenant: Optional[str] = None,
+            resource: Optional[str] = None,
+        ):
             """
-                Lists resource instances along with their ID and key which can be used as a parameter for tools that required it. 
+                Lists resource instances along with their ID and key which can be used as a parameter for tools that required it.
                 It can be used to verify the existeance of a resource instance.
 
                 Args:
                     page: Optional page number of the results to fetch, starting at page 1.
                     per_page: Optional number of results per page (maximum of 100).
+                    env: Optional environment key or ID (see list_environments). Defaults to the configured environment.
+                    tenant: Optional tenant key (see list_tenants). Defaults to the configured tenant.
+                    resource: Optional resource type key (see list_resources). Defaults to the configured resource.
             """
 
-            url = f"https://api.permit.io/v2/facts/{PROJECT_ID}/{ENV_ID}/resource_instances"
+            url = f"https://api.permit.io/v2/facts/{PROJECT_ID}/{env or ENV_ID}/resource_instances"
 
             params = {k: v for k, v in {
-                "tenant": TENANT,
-                "resource": RESOURCE_KEY,
+                "tenant": tenant or TENANT,
+                "resource": resource or RESOURCE_KEY,
                 "page": page,
                 "per_page": per_page,
             }.items() if v is not None}
@@ -122,6 +145,95 @@ class PermitServer:
 
         self._register_tool("list_resource_instances",
                             list_resource_instances)
+
+        # Read-only schema tools. With a project- or organization-level API key, `env`
+        # selects any environment of the configured project; with an environment-level
+        # key only that environment answers.
+        async def list_environments() -> List[Dict]:
+            """
+            Lists the environments of the configured project. Pass an environment's key
+            or ID as the `env` argument of other tools.
+            """
+            envs = await _api_get(f"/projects/{PROJECT_ID}/envs")
+            return [{"key": e["key"], "id": e["id"], "name": e["name"]} for e in envs]
+
+        self._register_tool("list_environments", list_environments)
+
+        async def list_tenants(env: Optional[str] = None, page: int = 1, per_page: int = 100) -> List[Dict]:
+            """
+            Lists the tenants of an environment.
+
+            Args:
+                env: Optional environment key or ID. Defaults to the configured environment.
+                page: Page number of the results to fetch, starting at page 1.
+                per_page: Number of results per page (maximum of 100).
+            """
+            tenants = await _api_get(f"/facts/{PROJECT_ID}/{env or ENV_ID}/tenants",
+                                     {"page": page, "per_page": per_page})
+            return [{"key": t["key"], "id": t["id"], "name": t["name"]} for t in tenants]
+
+        self._register_tool("list_tenants", list_tenants)
+
+        async def list_resources(
+            env: Optional[str] = None,
+            key_contains: Optional[str] = None,
+            page: int = 1,
+            per_page: int = 100,
+        ) -> List[Dict]:
+            """
+            Lists resource types with their actions and resource-level (ReBAC) roles.
+            Use it to check whether a resource type exists and which actions it defines.
+
+            Args:
+                env: Optional environment key or ID. Defaults to the configured environment.
+                key_contains: Optional substring the resource key must contain (applied to the fetched page).
+                page: Page number of the results to fetch, starting at page 1.
+                per_page: Number of results per page (maximum of 100).
+            """
+            resources = await _api_get(f"/schema/{PROJECT_ID}/{env or ENV_ID}/resources",
+                                       {"page": page, "per_page": per_page})
+            return [
+                {
+                    "key": r["key"],
+                    "name": r["name"],
+                    "actions": sorted(r.get("actions") or {}),
+                    "roles": sorted(r.get("roles") or {}),
+                }
+                for r in resources
+                if key_contains is None or key_contains in r["key"]
+            ]
+
+        self._register_tool("list_resources", list_resources)
+
+        async def list_roles(env: Optional[str] = None, resource: Optional[str] = None) -> List[Dict]:
+            """
+            Lists roles and their permissions ("resource:action").
+            With `resource`, returns only the top-level roles granting something on that
+            resource type, plus that resource's own ReBAC roles (scope = the resource key).
+
+            Args:
+                env: Optional environment key or ID. Defaults to the configured environment.
+                resource: Optional resource type key to filter permissions by.
+            """
+            env = env or ENV_ID
+            roles = await _api_get(f"/schema/{PROJECT_ID}/{env}/roles", {"per_page": 100})
+            result = []
+            for role in roles:
+                permissions = role.get("permissions") or []
+                if resource:
+                    permissions = [p for p in permissions if p.split(":", 1)[0] == resource]
+                    if not permissions:
+                        continue
+                result.append({"key": role["key"], "name": role["name"],
+                               "scope": "top-level", "permissions": permissions})
+            if resource:
+                resource_roles = await _api_get(
+                    f"/schema/{PROJECT_ID}/{env}/resources/{resource}/roles", {"per_page": 100})
+                result += [{"key": r["key"], "name": r["name"], "scope": resource,
+                            "permissions": r.get("permissions") or []} for r in resource_roles]
+            return result
+
+        self._register_tool("list_roles", list_roles)
 
         async def create_access_request(user_id: str,  role: str, reason: str, resource_instance: Optional[Union[str, int]] = None) -> str:
             """
